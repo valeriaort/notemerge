@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { Lecture, SlideMarker, Subject, User } from "../shared/types.js";
+import type { AbbreviationPair, Lecture, SlideMarker, Subject, User } from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -75,6 +75,24 @@ export function openDb(dbPath: string) {
       lecture_id TEXT NOT NULL REFERENCES lectures(id),
       timestamp INTEGER NOT NULL,
       block_id TEXT NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS abbreviation_pairs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      abbreviation TEXT NOT NULL,
+      expansion TEXT NOT NULL,
+      match_case_exactly INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ignored_tokens (
+      user_id TEXT NOT NULL REFERENCES users(id),
+      token TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, token)
     );
   `);
 
@@ -228,6 +246,70 @@ export function getLastUsedSubject(db: Database.Database): Subject | null {
   if (!user?.last_used_subject_id) return null;
   const subject = getSubject(db, user.last_used_subject_id);
   return subject ?? null;
+}
+
+// Abbreviation dictionary functions
+
+type AbbreviationPairRow = {
+  id: string;
+  user_id: string;
+  abbreviation: string;
+  expansion: string;
+  match_case_exactly: number;
+  created_at: number;
+};
+
+function rowToPair(row: AbbreviationPairRow): AbbreviationPair {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    abbreviation: row.abbreviation,
+    expansion: row.expansion,
+    matchCaseExactly: row.match_case_exactly === 1,
+    createdAt: row.created_at,
+  };
+}
+
+export function listAbbreviationPairs(db: Database.Database): AbbreviationPair[] {
+  return (db.prepare("SELECT * FROM abbreviation_pairs ORDER BY created_at ASC").all() as AbbreviationPairRow[]).map(rowToPair);
+}
+
+export function createAbbreviationPair(
+  db: Database.Database,
+  id: string,
+  userId: string,
+  abbreviation: string,
+  expansion: string,
+  matchCaseExactly: boolean,
+): AbbreviationPair {
+  const now = Date.now();
+  db.prepare(
+    "INSERT INTO abbreviation_pairs (id, user_id, abbreviation, expansion, match_case_exactly, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, userId, abbreviation, expansion, matchCaseExactly ? 1 : 0, now);
+  return rowToPair(
+    db.prepare("SELECT * FROM abbreviation_pairs WHERE id = ?").get(id) as AbbreviationPairRow,
+  );
+}
+
+export function deleteAbbreviationPair(db: Database.Database, id: string): boolean {
+  const result = db.prepare("DELETE FROM abbreviation_pairs WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+export function addIgnoredToken(
+  db: Database.Database,
+  userId: string,
+  token: string,
+): void {
+  const now = Date.now();
+  db.prepare(
+    "INSERT OR IGNORE INTO ignored_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
+  ).run(userId, token.toLowerCase(), now);
+}
+
+export function listIgnoredTokens(db: Database.Database, userId: string): ReadonlySet<string> {
+  const rows = db.prepare("SELECT token FROM ignored_tokens WHERE user_id = ?").all(userId) as { token: string }[];
+  return new Set(rows.map((r) => r.token));
 }
 
 // Seal a lecture: set stage to "sealed", assign subject, store presentation path
