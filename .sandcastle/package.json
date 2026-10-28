@@ -1,0 +1,16 @@
+{
+  "name": "notemerge-sandcastle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "waves": "cd .. && tsx .sandcastle/main.mts --dry-run",
+    "start": "cd .. && tsx .sandcastle/main.mts"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "^0.12.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
