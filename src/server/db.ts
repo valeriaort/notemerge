@@ -45,7 +45,7 @@ export function openDb(dbPath: string) {
       stage TEXT NOT NULL DEFAULT 'writing',
       subject_id TEXT,
       data_dir TEXT NOT NULL,
-      notes_data TEXT NOT NULL DEFAULT '[]',
+      notes_data TEXT NOT NULL DEFAULT '{"blocks":[],"meta":{}}',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -78,7 +78,7 @@ export function createLecture(
   const now = Date.now();
   db.prepare(
     `INSERT INTO lectures (id, user_id, stage, subject_id, data_dir, notes_data, created_at, updated_at)
-     VALUES (?, ?, 'writing', NULL, ?, '[]', ?, ?)`,
+     VALUES (?, ?, 'writing', NULL, ?, '{"blocks":[],"meta":{}}', ?, ?)`,
   ).run(id, userId, dataDir, now, now);
 
   return rowToLecture(

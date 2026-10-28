@@ -28,7 +28,7 @@ describe("POST /api/lectures", () => {
     expect(lecture.id).toBeTruthy();
     expect(lecture.stage).toBe("writing");
     expect(lecture.subjectId).toBeNull();
-    expect(lecture.notesData).toBe("[]");
+    expect(lecture.notesData).toBe('{"blocks":[],"meta":{}}');
   });
 
   it("creates a per-lecture folder on disk", async () => {
@@ -156,6 +156,54 @@ describe("notes persistence across restart", () => {
     } finally {
       server2.close();
     }
+  });
+});
+
+describe("block IDs and metadata persistence", () => {
+  it("saves and reloads a NotesDocument with stable block IDs and edit times", async () => {
+    const created: Lecture = await (
+      await fetch(`${server.url}/api/lectures`, { method: "POST" })
+    ).json();
+
+    const notesDoc = JSON.stringify({
+      blocks: [
+        {
+          id: "block-abc",
+          type: "paragraph",
+          props: {},
+          content: [{ type: "text", text: "First note", styles: {} }],
+          children: [],
+        },
+      ],
+      meta: {
+        "block-abc": { firstEditTime: 1700000000000, lastEditTime: 1700000001000 },
+      },
+    });
+
+    const res = await fetch(`${server.url}/api/lectures/${created.id}/notes`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notesData: notesDoc }),
+    });
+    expect(res.status).toBe(200);
+
+    // Reload from the API — block ID and times must survive round-trip
+    const reloaded: Lecture = await (
+      await fetch(`${server.url}/api/lectures/${created.id}`)
+    ).json();
+
+    const doc = JSON.parse(reloaded.notesData);
+    expect(doc.blocks[0].id).toBe("block-abc");
+    expect(doc.meta["block-abc"].firstEditTime).toBe(1700000000000);
+    expect(doc.meta["block-abc"].lastEditTime).toBe(1700000001000);
+  });
+
+  it("a new lecture starts with an empty blocks array", async () => {
+    const res = await fetch(`${server.url}/api/lectures`, { method: "POST" });
+    const lecture: Lecture = await res.json();
+    const doc = JSON.parse(lecture.notesData);
+    expect(doc.blocks).toEqual([]);
+    expect(doc.meta).toEqual({});
   });
 });
 

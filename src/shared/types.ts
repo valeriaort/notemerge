@@ -1,3 +1,10 @@
+export type NotesDocument = {
+  blocks: unknown[];
+  meta: Record<string, { firstEditTime?: number; lastEditTime?: number }>;
+};
+
+export const EMPTY_NOTES_DOCUMENT: NotesDocument = { blocks: [], meta: {} };
+
 export type LectureStage =
   | "writing"
   | "sources"

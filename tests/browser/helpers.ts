@@ -64,5 +64,5 @@ export async function openLecturePage(
   lectureId: string,
 ): Promise<void> {
   await page.goto(`${baseUrl}/#/write/${lectureId}`);
-  await page.waitForSelector("[data-testid='notes-textarea']");
+  await page.waitForSelector("[data-testid='notes-editor']");
 }

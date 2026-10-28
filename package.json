@@ -12,6 +12,9 @@
     "start": "node dist/server/index.js"
   },
   "dependencies": {
+    "@blocknote/ariakit": "^0.56.0",
+    "@blocknote/core": "^0.56.0",
+    "@blocknote/react": "^0.56.0",
     "better-sqlite3": "^9.4.3",
     "express": "^4.18.2",
     "react": "^18.2.0",
