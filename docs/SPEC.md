@@ -1,6 +1,6 @@
 # NoteMerge: Spec
 
-Status: updated after the gap-closing grilling session; the test seam is still to be confirmed. Vocabulary follows `CONTEXT.md`; behaviour and rationale follow `docs/DESIGN.md`. UI reference: variant D of the prototype.
+Status: ready for tickets. Vocabulary follows `CONTEXT.md`; behaviour and rationale follow `docs/DESIGN.md`. UI reference: variant D of the prototype.
 
 ## Problem Statement
 
@@ -195,7 +195,7 @@ The result is a separate merged note: the student's own notes, untouched, plus g
 ## Testing Decisions
 
 - A good test drives the system through its external behaviour (inputs a student provides, outputs they see or export) and does not assert on internal structure, prompts, or intermediate data shapes beyond the documented IDs and verdict contracts.
-- **Primary seam (proposed): the local server's API, covering the lecture lifecycle** — create a lecture with notes (including timestamped blocks and slide markers) and optional presentation and audio, run transcription, run the merge, record review decisions, and fetch the final note and exports. Everything the student can do after typing maps to calls at this seam, so most behaviour in this spec can be verified here.
+- **Primary seam (confirmed): the local server's API, covering the lecture lifecycle** — create a lecture with notes (including timestamped blocks and slide markers) and optional presentation and audio, run transcription, run the merge, record review decisions, and fetch the final note and exports. Everything the student can do after typing maps to calls at this seam, so most behaviour in this spec can be verified here.
 - The external providers (Groq, Jev, Haiku, Notion) are replaced with controllable fakes at their interfaces; ffmpeg and PDF text extraction run for real on small fixture files. Fakes return scripted verdicts so tests can assert, for example, that a "missing" verdict yields a green addition placed in the right window, that a conflict is flagged exactly once, that export is refused while a conflict is unresolved, and that skipped flags produce low-confidence marking.
 - Behaviours to cover at the seam: window tiling and slide mapping (default, merged, reassigned, many-to-many); marker-less and presentation-less fallbacks; notes-alone rejection; margin retrieval with in-window-only judging; start-time guess and alignment derivation; second-file continuation; abbreviation expansion applied only to copies; glossary selection (mini vs subject fallback) and token cap; filler removal; flag rules; placement rules; sealed notes immutability; review persistence and resume; export gating and clean output; lecture start and end and the N+1 window rule; sentence assignment by start time and chunk-boundary stitching; note block identity under split, merge, paste and move; slide bullet extraction rules; Jev retry, per-window persistence, pause and resume (including no skip); Haiku output validation and the dropped-operation fallback; transcription pause and resume; conflict K/E/reopen behaviour; low-confidence badge rule; Notion parent-page selection and child-page creation (with a fake Notion).
 - A thin end-to-end browser smoke test of the variant D flow with the same fakes is acceptable to guard keyboard shortcuts and screen sequencing, but is not a second behavioural seam.
@@ -220,7 +220,3 @@ The result is a separate merged note: the student's own notes, untouched, plus g
 ### Remaining open items
 - Thresholds are configuration to tune on real lectures: Whisper flag gates, the noise cutoff (starting at 0.95), the conflict decision (chosen label), chunk length, and the context margin (default 1 minute). Jev's pinned version (`jev-1.14.0`) and its probabilities must be validated on Spanish lecture material before the thresholds are treated as settled.
 - Not prototyped: a window mapped to a range of slides, and the real BlockNote editor with custom green and yellow blocks.
-- Unconfirmed: the test seam (the server API) proposed in Testing Decisions.
-
-### Tracker
-No issue tracker or triage label vocabulary is configured for this project (no `/setup-matt-pocock-skills` output, not a git repository), so this spec has been saved as a local file rather than published with the `ready-for-agent` label. Publish it once a tracker is chosen.
