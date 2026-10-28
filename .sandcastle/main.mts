@@ -89,7 +89,7 @@ const hooks = {
 // The patterns are a best guess; widen them if a real limit slips through.
 
 const LIMIT_PATTERN =
-  /usage limit|rate.?limit|limit reached|quota|credit|\b429\b|overloaded|resets? (at|in)/i;
+  /usage limit|rate.?limit|limit reached|hit your .{0,30}limit|quota|credit|\b429\b|overloaded|resets? (at|in|\d)/i;
 const BACKOFF_MIN = [5, 10, 20, 30]; // minutes; last value repeats
 const MAX_SINGLE_WAIT_MS = 6 * 60 * 60 * 1000; // longer than this: stop and tell the user
 const MAX_TOTAL_WAIT_MS = 12 * 60 * 60 * 1000;
@@ -102,10 +102,20 @@ const errorText = (e: unknown): string => {
   return String(e);
 };
 
-// Claude Code reports "...usage limit reached|<epoch seconds>" when it knows the reset.
+// Claude Code reports either "...usage limit reached|<epoch seconds>" or
+// "You've hit your 5-hour limit · resets 8pm (UTC)". Only UTC clock times are parsed.
 const parseResetMs = (text: string): number | undefined => {
-  const m = text.match(/limit reached\|(\d{10})/i);
-  return m ? Number(m[1]) * 1000 : undefined;
+  const epoch = text.match(/limit reached\|(\d{10})/i);
+  if (epoch) return Number(epoch[1]) * 1000;
+  const m = text.match(/resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i);
+  if (!m) return undefined;
+  let hour = Number(m[1]) % 12;
+  if (m[3]!.toLowerCase() === "pm") hour += 12;
+  const t = new Date();
+  t.setUTCHours(hour, Number(m[2] ?? 0), 0, 0);
+  // A time that passed within the last 15 minutes means the limit has just reset.
+  if (t.getTime() <= Date.now() - 15 * 60_000) t.setUTCDate(t.getUTCDate() + 1);
+  return t.getTime();
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
