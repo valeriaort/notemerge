@@ -1,0 +1,831 @@
+<!doctype html>
+<!--
+  PROTOTYPE — THROWAWAY. Delete me once a variant wins.
+
+  Question: what should NoteMerge look like end to end (write → sources → check → review → export)
+  with a very simple UI and as few clicks as possible, without losing any behaviour in CONTEXT.md / docs/DESIGN.md?
+  Reference draft: "NoteMerge Screens.html" (a vague idea, not final).
+
+  (D, added later, = B up to the transcript check + C for review/export.)
+  Three structurally different workflows on this one page, switched with ?variant= (or the bottom bar, or ← →):
+    A  One page    — the note is the only canvas; sheet + rail appear in context, hover widgets do the review
+    B  Focus flow  — one decision per full screen, keyboard first; flagged sentences and conflicts are card queues
+    C  Dock        — note on the left, a permanent dock on the right holds every control; no modals, no screen changes
+
+  Run:  open "prototype/notemerge-prototype.html?variant=A"      (no build, no server, no persistence)
+  In-memory only. Transcription, merge, audio, Notion and PDF are all stubbed with timers.
+  The bottom bar's "Jump" menu fills in sample files and skips ahead so each stage can be judged on its own.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NoteMerge — PROTOTYPE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1C1C1A;--ink2:#4A4945;--mute:#6B6A65;--line:#ECEAE4;--line2:#DEDCD5;--line3:#CFCDC6;--side:#F4F3EF;--hover:#F7F6F2;--soft:#FAF9F5;
+--green:#E4F2E1;--greenInk:#2F6A2B;--yel:#FFF1BF;--yelInk:#6A4E00;--yelLine:#8A6400}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:14px/1.4 Inter,system-ui,sans-serif;color:var(--ink);background:#fff;overflow:hidden}
+#app{height:100vh;position:relative}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.muted{color:var(--mute)} .tiny{font-size:12px} .sm{font-size:13px} .grow{flex:1;min-width:0}
+.row{display:flex;align-items:center} .col{display:flex;flex-direction:column} .between{justify-content:space-between}
+.wrap{flex-wrap:wrap} .g4{gap:4px}.g6{gap:6px}.g8{gap:8px}.g10{gap:10px}.g12{gap:12px}.g16{gap:16px}.g20{gap:20px}
+button{font:inherit;color:inherit;cursor:pointer}
+.ic{display:inline-flex}
+.btn{height:34px;padding:0 14px;border-radius:8px;border:1px solid var(--line3);background:#fff;font-weight:500;font-size:13px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.pri{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:600}.btn.pri:hover{background:#000}
+.btn.lg{height:44px;padding:0 22px;font-size:15px;border-radius:10px}
+.btn.sm{height:28px;padding:0 10px;font-size:12px;border-radius:6px}
+.btn[disabled]{background:#E6E4DD;border-color:#E6E4DD;color:var(--mute);cursor:not-allowed}
+.btn.ok{color:var(--greenInk);border-color:#B9D8B3;background:#F2F9F0}
+.ghost{border:0;background:none;color:var(--ink2);font-size:13px;text-decoration:underline;text-underline-offset:2px;padding:0}
+.ghost:hover{color:#000}
+.chip{height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--line3);background:#fff;font-weight:500;font-size:13px}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink)} .chip.dash{border-style:dashed;color:var(--ink2)}
+.pill{font-size:13px;font-weight:600;padding:6px 10px;border-radius:6px}
+.pill.y{color:var(--yelInk);background:var(--yel)} .pill.g{color:var(--greenInk);background:var(--green)}
+input,select,textarea{font:inherit;height:32px;border:1px solid var(--line3);border-radius:6px;padding:0 10px;background:#fff;color:var(--ink);min-width:0}
+textarea{height:auto;padding:10px 12px;resize:none}
+input:focus,select:focus,textarea:focus,[contenteditable]:focus{outline:2px solid var(--ink);outline-offset:-1px}
+.lbl{font-size:12px;font-weight:600;color:var(--mute)}
+.bar{height:6px;border-radius:99px;background:var(--line);overflow:hidden;display:block}
+.bar>i{display:block;height:100%;background:var(--ink);border-radius:99px;transition:width .1s}
+.bar.ind>i{width:35%;animation:ind 1.1s ease-in-out infinite alternate}
+@keyframes ind{from{margin-left:0}to{margin-left:65%}}
+kbd{font:500 11px 'JetBrains Mono',monospace;border:1px solid var(--line3);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:#fff;color:var(--ink2)}
+hr{border:0;border-top:1px solid var(--line)}
+
+/* header + scroll */
+.hd{height:60px;flex-shrink:0;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;gap:16px}
+.scroll{overflow:auto}
+.ttl{font-weight:600;font-size:15px}
+
+/* notes + merged doc */
+.doc{font-size:15px;line-height:1.55;display:flex;flex-direction:column;gap:6px;width:680px;max-width:calc(100% - 48px);margin:0 auto}
+.doc h1{font-size:26px;font-weight:700;margin-bottom:4px;line-height:1.25}
+.ed:empty:before{content:attr(data-ph);color:#A8A69F;pointer-events:none}
+.ed{outline:none;min-height:1.55em;white-space:pre-wrap}
+.mk{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--mute);font:500 12px 'JetBrains Mono',monospace}
+.mk:before,.mk:after{content:"";flex:1;height:1px;background:var(--line2)}
+.b{position:relative;padding:4px 10px;margin:0 -10px;border-radius:6px}
+.b.add{background:var(--green)} .b.add.low{background:#F2F9F0;outline:1.5px dashed var(--greenInk);outline-offset:-1.5px}
+.b.conf{background:var(--yel)} .b.conf.active{outline:2px solid var(--yelLine)}
+.b.res{border-left:3px solid #E6D38A;border-radius:0 6px 6px 0}
+.b.rev{color:var(--mute);text-decoration:line-through;background:var(--hover)}
+.clean .b{background:none!important;outline:0!important;border-left:0!important}
+.clean .b.rev{display:none}
+.tag{font-size:11px;font-weight:600;color:var(--greenInk);margin-left:8px;white-space:nowrap}
+.w{display:none;position:absolute;right:0;bottom:100%;padding-bottom:6px;z-index:6;cursor:default;text-decoration:none}
+.b.below>.w{bottom:auto;top:100%;padding:6px 0 0}
+.b:hover>.w,.b.open>.w{display:block}
+.w>.in{background:#fff;border:1px solid var(--line2);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.16);font-size:13px;line-height:1.4;color:var(--ink)}
+.w.wa>.in{background:var(--ink);color:#fff;border:0;border-radius:6px;padding:4px 6px 4px 10px;display:flex;gap:10px;align-items:center;font-size:12px;white-space:nowrap}
+.w.wa .btn{height:22px;font-size:12px;padding:0 8px;background:transparent;color:#fff;border-color:#555}
+.w.wc{width:410px}
+.cw{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.src{display:flex;gap:10px;align-items:flex-start}
+.rw{padding:10px 12px;background:var(--side);border-radius:8px;display:flex;flex-direction:column;gap:3px}
+.play{width:30px;height:30px;flex-shrink:0;border-radius:99px;border:1px solid var(--line3);background:#fff;color:var(--ink);display:flex;align-items:center;justify-content:center}
+.play.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.play.big{width:44px;height:44px;background:var(--ink);color:#fff;border-color:var(--ink)}
+.play.sm{width:26px;height:26px}
+.wa .play{width:22px;height:22px;background:transparent;color:#fff;border-color:#666}
+
+/* forms */
+.dz{border:1.5px dashed var(--line3);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
+body.dragging .dz{border-color:var(--ink);background:var(--soft)}
+.dz.big{padding:16px}
+.file{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--hover);border-radius:8px}
+.dzhint{text-align:center;font-size:13px;color:var(--mute);padding:2px 0}
+.stin{width:64px;height:30px;text-align:center;font:500 13px 'JetBrains Mono',monospace}
+.stin.need{border:1.5px solid var(--ink)}
+.x{border:0;background:none;color:var(--mute);width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:6px}
+.x:hover{background:var(--line);color:var(--ink)}
+.wv{display:flex;align-items:center;gap:3px;height:96px;position:relative;cursor:pointer}
+.wv i{width:3px;border-radius:2px;background:var(--line3)}.wv i.p{background:var(--ink)}
+.wv u{position:absolute;top:0;bottom:0;width:2px;background:var(--ink)}
+.mkb{text-align:left;display:flex;gap:12px;align-items:baseline;padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;width:100%}
+.mkb.on{border:1.5px solid var(--ink);background:var(--side)}
+.mrow{display:grid;grid-template-columns:70px 100px minmax(0,1fr) 150px 64px;gap:10px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--line);font-size:13px}
+.mrow select{height:30px;font-size:12px;width:100%}
+
+/* flagged sentences */
+.fl{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--soft);cursor:pointer;display:flex;flex-direction:column;gap:6px}
+.fl.open{background:#fff;border:1.5px solid var(--ink);cursor:default}
+.fl.fixed{border-color:#B9D8B3}
+.hl{background:var(--yel);border-bottom:2px dotted var(--yelLine)}
+.finp{width:100%;height:34px;font-size:14px}
+
+/* sidebar */
+.side{width:232px;flex-shrink:0;background:var(--side);border-right:1px solid var(--line2);display:flex;flex-direction:column;padding:18px 12px;gap:18px;overflow:auto}
+.lec{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;font-size:13px;cursor:pointer}
+.lec:hover{background:#ECEAE4}.lec.cur{background:#E6E4DD;font-weight:500}
+.lec small{font-size:11px;color:var(--mute);white-space:nowrap}
+.lec small.y{font-weight:600;color:var(--yelInk);background:var(--yel);padding:2px 6px;border-radius:4px}
+.pop{position:absolute;z-index:30;background:#fff;border:1px solid var(--line2);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);padding:8px;width:280px}
+.scrim{position:fixed;inset:0;background:rgba(28,28,26,.4);z-index:40;display:flex;align-items:center;justify-content:center}
+.modal{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:860px;max-width:94vw;max-height:88vh;overflow:auto;padding:24px 28px}
+.sheet{position:absolute;right:24px;top:68px;width:520px;max-height:calc(100% - 96px);background:#fff;border-radius:14px;border:1px solid var(--line2);box-shadow:0 20px 60px rgba(0,0,0,.22);display:flex;flex-direction:column;z-index:20}
+
+/* prototype bar + toast */
+#bar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:100;background:#111;color:#fff;border-radius:999px;display:flex;align-items:center;gap:6px;padding:5px 8px;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:12px}
+#bar button,#bar select{background:transparent;border:0;color:#fff;height:26px;border-radius:99px;padding:0 9px;font-size:12px}
+#bar button:hover{background:#333}#bar select{background:#222;border:1px solid #444;padding:0 6px}
+#bar b{min-width:150px;text-align:center;font-weight:600}
+#bar i{width:1px;height:16px;background:#444}
+#toast{position:fixed;left:24px;bottom:18px;z-index:99;background:var(--ink);color:#fff;border-radius:8px;padding:9px 14px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.on{opacity:1}
+.spin{width:14px;height:14px;border:2px solid var(--line3);border-top-color:var(--ink);border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.eq{display:inline-flex;gap:2px;align-items:flex-end;height:12px}.eq i{width:2px;background:currentColor;animation:eq .6s ease-in-out infinite alternate}
+.eq i:nth-child(2){animation-delay:.2s}.eq i:nth-child(3){animation-delay:.4s}
+@keyframes eq{from{height:3px}to{height:12px}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="bar"></div>
+<div id="toast"></div>
+<script>
+/* ============================== tiny helpers ============================== */
+const $ = (s, el = document) => el.querySelector(s);
+function h(tag, a, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(a || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'style') e.style.cssText = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k === 'value') e.value = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  kids.flat(9).forEach(c => { if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(c)); });
+  return e;
+}
+const IC = {
+  plus: '<path d="M8 3v10M3 8h10"/>', up: '<path d="M8 11V2.5M4.5 6 8 2.5 11.5 6M2.5 11v2.5h11V11"/>',
+  check: '<path d="M3 8.5 6.5 12 13 4.5"/>', x: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  down: '<path d="M8 3v10M4 9l4 4 4-4"/>', right: '<path d="M3 8h10M9 4l4 4-4 4"/>', left: '<path d="M13 8H3M7 4 3 8l4 4"/>',
+  chev: '<path d="M4 6l4 4 4-4"/>', lock: '<path d="M4 7h8v6.5H4zM6 7V5a2 2 0 014 0v2"/>',
+  gear: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/>',
+  file: '<path d="M4 1.8h5l3 3v9.4H4z"/>', mic: '<rect x="6" y="2" width="4" height="7" rx="2"/><path d="M3.5 8a4.5 4.5 0 009 0M8 12.5V14.5"/>',
+  eye: '<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/>',
+  undo: '<path d="M3 7h7a3 3 0 010 6H6M6 4 3 7l3 3"/>', merge: '<path d="M3 3v3a3 3 0 003 3h4M3 13V9M10 6l3 3-3 3"/>',
+  notion: '<path d="M3 3h8l2 2v8H3zM6 6v5M6 6l4 5M10 6v5"/>', pdf: '<path d="M4 1.8h5l3 3v9.4H4zM6 10h4M6 12h2"/>'
+};
+const FILL = { play: '<path d="M5 3l8 5-8 5z"/>', pause: '<path d="M5 3h2.2v10H5zM8.8 3H11v10H8.8z"/>' };
+function ic(n, s = 16) {
+  const f = FILL[n];
+  return h('span', { class: 'ic', html: `<svg width="${s}" height="${s}" viewBox="0 0 16 16" ${f ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'}>${f || IC[n]}</svg>` });
+}
+const pad = n => String(n).padStart(2, '0');
+const toSec = t => { const p = t.split(':').map(Number); return p[0] * 3600 + p[1] * 60 + (p[2] || 0); };
+const fmt = (s, sec = true) => { s = ((s % 86400) + 86400) % 86400; return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s % 3600 / 60)) + (sec ? ':' + pad(s % 60) : ''); };
+const mmss = s => pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+let toastT; function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); }
+
+/* ============================== mock data ============================== */
+const SLIDE_T = { 1: 'Portada ATM', 2: 'Superficies articulares', 3: 'Disco articular', 4: 'Ligamentos', 5: 'Cápsula articular', 6: 'Lig. esfenomandibular', 7: 'Lig. estilomandibular' };
+const slideTitle = n => SLIDE_T[n] || 'Slide ' + n;
+const seedNotes = () => [
+  { k: 'h', text: 'Tema 4 — Articulación temporomandibular' },
+  { k: 'm', n: 1, time: '09:10:12' },
+  { k: 'p', text: 'ATM: art. sinovial bicondílea, entre cóndilo mandibular y fosa glenoidea del temporal' },
+  { k: 'p', text: 'Superficies cubiertas por fibrocartílago, ¡no hialino!' },
+  { k: 'm', n: 2, time: '09:13:40' },
+  { k: 'p', text: '• Disco articular: bicóncavo, divide la art. en 2 compartimentos' },
+  { k: 'p', text: '• Disco vascularizado en toda su extensión' },
+  { k: 'm', n: 3, time: '09:17:05' },
+  { k: 'p', text: '• PTeLi → protrusión + lateralidad contralateral' },
+  { k: 'p', text: '• Ligamentos: temporomandibular, esfenomandibular, estilomandibular' },
+  { k: 'm', n: 4, time: '09:21:30' },
+  { k: 'p', text: '• Lig. estilomandibular: limita la retrusión' },
+  { k: 'p', text: '• Cápsula laxa por delante, reforzada lateralmente' },
+  { k: 'p', text: '' }
+];
+const sd = (id, text) => ({ id, text });
+/* the merged note (what the merge would return for the seeded notes) */
+const MERGED = [
+  { t: 'h', text: 'Tema 4 — Articulación temporomandibular' },
+  { t: 'm', n: 1 },
+  { t: 'o', text: 'ATM: art. sinovial bicondílea, entre cóndilo mandibular y fosa glenoidea del temporal' },
+  { t: 'add', id: 'a1', text: 'Ambas ATM funcionan siempre a la vez: una sola unidad funcional.', src: { kind: 'slide', ...sd('S001-B03', 'Las dos ATM forman una unidad funcional') } },
+  { t: 'o', text: 'Superficies cubiertas por fibrocartílago, ¡no hialino!' },
+  { t: 'm', n: 2 },
+  { t: 'o', text: '• Disco articular: bicóncavo, divide la art. en 2 compartimentos' },
+  { t: 'conf', id: 'c1', orig: '• Disco vascularizado en toda su extensión', slide: sd('S002-B04', 'Zona central del disco: avascular y no inervada'), tr: sd('A01-T0057', '“…la parte central del disco no tiene vasos, por eso no se regenera…”'), rewrite: '• Disco: zona central avascular y no inervada; periferia vascularizada' },
+  { t: 'add', id: 'a2', text: '• Zona retrodiscal (bilaminar): muy vascularizada e inervada', src: { kind: 'slide', ...sd('S002-B05', 'Zona retrodiscal (bilaminar): muy vascularizada e inervada') } },
+  { t: 'm', n: 3 },
+  { t: 'o', text: '• PTeLi → protrusión + lateralidad contralateral' },
+  { t: 'o', text: '• Ligamentos: temporomandibular, esfenomandibular, estilomandibular' },
+  { t: 'add', id: 'a3', text: '• Haz superior del PTeLi se inserta en el disco; haz inferior en la fosita pterigoidea del cóndilo', src: { kind: 'slide', ...sd('S003-B02', 'Pterigoideo lateral: haz superior → disco; haz inferior → fosita pterigoidea') } },
+  { t: 'add', id: 'a5', flag: 'A01-T0042', text: '• Examen: la a. maxilar pasa por el ojal retrocondíleo de Juvara', src: { kind: 'transcript', ...sd('A01-T0042', '“…la arteria maxilar pasa por el ojal retrocondíleo de Juvara, esto cae en el examen…”') } },
+  { t: 'm', n: 4 },
+  { t: 'conf', id: 'c2', disagree: true, orig: '• Lig. estilomandibular: limita la retrusión', slide: sd('S023-B02', 'Limita la apertura mandibular'), tr: sd('A02-T0131', '“…el estilomandibular limita la protrusión excesiva…”'), rewrite: '• Lig. estilomandibular: limita la protrusión excesiva', rewriteSlide: '• Lig. estilomandibular: limita la apertura mandibular' },
+  { t: 'o', text: '• Cápsula laxa por delante, reforzada lateralmente' },
+  { t: 'add', id: 'a4', flag: 'A02-T0118', text: '• Lig. esfenomandibular: espina del esfenoides → língula', src: { kind: 'transcript', ...sd('A02-T0118', '“…el ligamento esfenomandibular va de la espina del esfenoides a la língula…”') } }
+];
+const FLAGS0 = () => [
+  { id: 'A01-T0042', time: '09:23:10', text: 'La arteria maxilar pasa por el ojal retrocondíleo de Juvara.', term: 'ojal retrocondíleo de Juvara', reason: 'Medical term not in your notes or abbreviations' },
+  { id: 'A01-T0066', time: '09:31:48', text: 'La cuerda del tímpano sale por la cisura petrotimpánica.', term: 'cisura petrotimpánica', reason: 'Medical term not in your notes or abbreviations' },
+  { id: 'A02-T0118', time: '10:32:41', text: 'El ligamento esfeno mandíbula va de la espina del esfenoides a la língula.', term: 'esfeno mandíbula', reason: 'Not in your notes or abbreviations' },
+  { id: 'A02-T0131', time: '10:36:02', text: 'Por eso el estilo mandibular limita la protrusión excesiva.', term: 'estilo mandibular', reason: 'Not in your notes or abbreviations' },
+  { id: 'A02-T0177', time: '10:48:19', text: '…y esto lo os vais a… en el examen siempre…', term: '…y esto lo os vais a… en el examen siempre…', reason: 'Unclear audio' }
+].map(f => ({ ...f, orig: f.text, fixed: false }));
+const SNIP = ['“…el ligamento esfenomandibular…”', '“…la cápsula es laxa por delante…”', '“…esto cae siempre en el examen…”', '“…el disco articular es bicóncavo…”'];
+
+/* ============================== state ============================== */
+let V = new URLSearchParams(location.search).get('variant') || 'A';
+const S = {};
+let tick = null, alT = null, playT = null;
+function reset() {
+  clearInterval(tick); clearInterval(alT);
+  Object.keys(S).forEach(k => delete S[k]);
+  Object.assign(S, {
+    stage: 'write',               // write | sources | processing | merging | review | export (export is only used by B)
+    sealed: false, notes: seedNotes(), sub: null, al: null, map: null, mapEdited: false,
+    subjects: ['Anatomía II', 'Fisiología', 'Histología'], guia: { 'Anatomía II': 312, 'Fisiología': 268 },
+    src: { subject: 'Anatomía II', newName: '', pres: null, audio: [], abbr: [{ k: 'mx', v: 'maxilar' }, { k: 'lig', v: '' }] },
+    proc: { n: 0, total: 48, done: false }, vis: 0, flags: FLAGS0(), flagOpen: null, fidx: 0,
+    dec: {}, active: null, exp: {}, clean: false, playing: null, settings: false, lecMenu: false, focusK: null
+  });
+}
+reset();
+const markers = () => S.notes.filter(b => b.k === 'm');
+const hasPres = () => !!S.src.pres, hasAudio = () => S.src.audio.length > 0;
+const startOk = a => /^\d{1,2}:\d{2}$/.test((a.start || '').trim());
+const guessStart = () => { const m = markers()[0]; return m ? fmt(toSec(m.time), false) : ''; };
+
+function mergedBlocks() {
+  return MERGED.filter(b => b.t === 'add' ? (b.src.kind === 'slide' ? hasPres() : hasAudio()) : b.t === 'conf' ? ((b.slide && hasPres()) || (b.tr && hasAudio())) : true)
+    .map(b => b.t === 'conf' ? { ...b, slide: hasPres() ? b.slide : null, tr: hasAudio() ? b.tr : null, rewrite: hasAudio() ? b.rewrite : (b.rewriteSlide || b.rewrite) } : b);
+}
+const confs = () => mergedBlocks().filter(b => b.t === 'conf');
+const adds = () => mergedBlocks().filter(b => b.t === 'add');
+const unresolved = () => confs().filter(c => !S.dec[c.id]);
+const isLow = b => b.flag && !S.flags.find(f => f.id === b.flag).fixed;
+const visFlags = () => S.proc.done ? S.flags.length : Math.ceil(S.flags.length * S.proc.n / S.proc.total);
+const pendingFlags = () => S.flags.slice(0, visFlags()).filter(f => !f.fixed);
+const mergeBlockReason = () => {
+  const s = S.src;
+  if (!s.pres && !s.audio.length) return 'Add slides or audio. Notes alone can’t be merged.';
+  if (s.subject === '+new' && !s.newName.trim()) return 'Name the new subject.';
+  const a = s.audio.find(x => !startOk(x)); if (a) return `Enter when ${a.name} started.`;
+  return '';
+};
+
+/* ============================== flow actions ============================== */
+function openSources() { buildMap(); S.stage = 'sources'; S.sub = null; render(); }
+function closeSources() { S.stage = 'write'; S.sub = null; render(); }
+function addFiles(list) {
+  const s = S.src;
+  [...list].forEach(f => {
+    const n = f.name || 'file';
+    if (/\.pdf$/i.test(n)) s.pres = { name: n, slides: 64 };
+    else if (/\.(m4a|mp3|wav|aac|ogg|webm|mp4)$/i.test(n)) {
+      if (s.audio.length >= 2) return toast('A lecture takes at most two audio files');
+      s.audio.push({ name: n, min: 38 + (n.length * 7) % 24, start: s.audio.length ? '' : guessStart(), guessed: !s.audio.length });
+    } else toast('Unsupported file: ' + n);
+  });
+  render();
+}
+function sampleFiles() { addFiles([{ name: 'Tema 4 — ATM.pdf' }, { name: 'parte1.m4a' }, { name: 'parte2.m4a' }]); }
+function startMerge() {
+  if (mergeBlockReason()) return;
+  S.sealed = true; S.sub = null;
+  if (hasAudio()) { S.stage = 'processing'; S.fidx = 0; S.flagOpen = null; startTranscribe(0); render(); }
+  else mergeNow();
+}
+function startTranscribe(from) {
+  clearInterval(tick);
+  S.proc = { n: from, total: 48, done: false }; S.vis = visFlags();
+  tick = setInterval(() => {
+    const p = S.proc; p.n++;
+    if (p.n >= p.total) {
+      clearInterval(tick); p.done = true;
+      if ((V === 'B' || V === 'D') ? S.fidx >= S.flags.length : pendingFlags().length === 0) return mergeNow();
+      return render();
+    }
+    if (visFlags() !== S.vis) { S.vis = visFlags(); render(); } else updateProg();
+  }, 110);
+}
+function updateProg() {
+  document.querySelectorAll('[data-prog]').forEach(e => {
+    const pct = S.proc.n / S.proc.total * 100;
+    if (e.dataset.prog === 'bar') e.style.width = pct + '%'; else e.textContent = `Transcribing ${S.proc.n} / ${S.proc.total}`;
+  });
+}
+function mergeNow() {
+  clearInterval(tick); S.stage = 'merging'; render();
+  setTimeout(() => { S.stage = 'review'; S.dec = {}; S.active = unresolved()[0]?.id || null; render(); scrollActive(); }, 1400);
+}
+function decide(id, v) {
+  S.dec[id] = v; S.active = unresolved()[0]?.id || null; render(); scrollActive();
+}
+function undecide(id) { delete S.dec[id]; S.active = id; render(); scrollActive(); }
+function nextConflict() {
+  const u = unresolved(); if (!u.length) return;
+  const i = u.findIndex(c => c.id === S.active); S.active = u[(i + 1) % u.length].id; render(); scrollActive();
+}
+function scrollActive() { setTimeout(() => document.querySelector('.b.active')?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 40); }
+function toggleRevert(id) { S.dec[id] = S.dec[id] === 'revert' ? 'keep' : 'revert'; render(); }
+function doExport(kind) {
+  if (unresolved().length || S.exp[kind]) return;
+  S.exp[kind] = 'busy'; render();
+  setTimeout(() => { S.exp[kind] = 'done'; render(); toast(kind === 'notion' ? 'New page created in Apuntes / ' + subjName() : 'Clean copy downloaded (stub)'); }, 900);
+}
+const subjName = () => S.src.subject === '+new' ? (S.src.newName || 'New subject') : S.src.subject;
+function play(id) {
+  clearTimeout(playT);
+  if (S.playing === id) { S.playing = null; render(); return; }
+  S.playing = id; render(); playT = setTimeout(() => { S.playing = null; render(); }, 3200);
+}
+function sampleSrc() {
+  return { subject: 'Anatomía II', newName: '', pres: { name: 'Tema 4 — ATM.pdf', slides: 64 }, abbr: [{ k: 'mx', v: 'maxilar' }, { k: 'lig', v: '' }],
+    audio: [{ name: 'parte1.m4a', min: 52, start: guessStart(), guessed: true }, { name: 'parte2.m4a', min: 41, start: '' }] };
+}
+function jump(to) {
+  reset();
+  if (to !== 'write') { S.src = sampleSrc(); buildMap(); S.src.audio[1].start = '10:26'; }
+  if (to === 'sources') { S.src.audio[1].start = ''; S.stage = 'sources'; }
+  if (to === 'check') { S.sealed = true; S.stage = 'processing'; startTranscribe(26); }
+  if (to === 'review' || to === 'export') {
+    S.sealed = true; S.stage = 'review';
+    if (to === 'export') { confs().forEach(c => S.dec[c.id] = 'edit'); S.stage = V === 'B' ? 'export' : 'review'; }
+    else S.active = unresolved()[0]?.id || null;
+  }
+  render();
+}
+function buildMap() {
+  if (S.map) return;
+  const ms = markers();
+  S.map = ms.map((m, i) => {
+    const idx = S.notes.indexOf(m), nx = S.notes[idx + 1];
+    return { label: 'W' + m.n, from: m.time, to: ms[i + 1] ? ms[i + 1].time : '—', note: nx && nx.k === 'p' && nx.text ? nx.text : '(nothing written)', slide: m.n };
+  });
+}
+
+/* ============================== shared pieces ============================== */
+/* The writing surface is mostly BlockNote behaviour; this is a stand-in. Not re-rendered while typing. */
+function Editor() {
+  const sealed = S.sealed;
+  const nextTime = () => { const ms = markers(); return ms.length ? fmt(toSec(ms[ms.length - 1].time) + 220) : fmt(9 * 3600 + 2 * 60 + 14); };
+  const renum = () => { let n = 0; S.notes.forEach(b => { if (b.k === 'm') b.n = ++n; }); };
+  const focusAfter = i => { S.focusK = 'blk' + i; render(); };
+  return h('div', { class: 'doc', lang: 'es' }, S.notes.map((b, i) => {
+    if (b.k === 'm') return h('div', { class: 'mk' }, `// slide ${b.n} · ${b.time}`);
+    const el = h(b.k === 'h' ? 'h1' : 'div', {
+      class: 'ed', contenteditable: sealed ? 'false' : 'true', 'data-k': 'blk' + i,
+      'data-ph': b.k === 'h' ? 'Untitled lecture' : (i === S.notes.length - 1 ? 'Type // when the slide changes' : '')
+    }, b.text);
+    el.addEventListener('input', () => {
+      b.text = el.textContent;
+      if (b.k === 'p' && b.text.trim() === '//') {
+        S.notes[i] = { k: 'm', n: 0, time: nextTime() }; S.notes.splice(i + 1, 0, { k: 'p', text: '' }); renum(); focusAfter(i + 1);
+      }
+    });
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); S.notes.splice(i + 1, 0, { k: 'p', text: '' }); focusAfter(i + 1); }
+      else if (e.key === 'Backspace' && !b.text && b.k === 'p' && S.notes.filter(x => x.k !== 'm').length > 1) {
+        e.preventDefault(); let at = i; S.notes.splice(i, 1);
+        if (S.notes[i - 1] && S.notes[i - 1].k === 'm') { S.notes.splice(i - 1, 1); at = i - 1; renum(); }
+        const prev = [...S.notes.slice(0, at)].map((x, j) => [x, j]).reverse().find(([x]) => x.k !== 'm'); focusAfter(prev ? prev[1] : 0);
+      }
+    });
+    return el;
+  }));
+}
+
+function PlayBtn(id, cls = '') {
+  const on = S.playing === id;
+  return h('button', { class: `play ${cls} ${on ? 'on' : ''}`, 'aria-label': 'Play with surrounding audio', title: 'Play with a few seconds of surrounding audio', onclick: e => { e.stopPropagation(); play(id); } },
+    on ? h('span', { class: 'eq' }, h('i'), h('i'), h('i')) : ic('play', 11));
+}
+
+function decidedText(c) { return S.dec[c.id] === 'edit' ? c.rewrite : c.orig; }
+
+function ConflictBody(c, o = {}) {
+  const both = c.slide && c.tr;
+  return [
+    h('div', { class: 'tiny', style: 'font-weight:600;color:var(--yelInk)' }, `Your note conflicts with ${both ? '2 sources' : '1 source'}`),
+    c.slide && h('div', { class: 'col', style: 'gap:3px' }, h('span', { class: 'mono tiny muted' }, 'Slide · ' + c.slide.id), h('span', { lang: 'es' }, c.slide.text)),
+    c.tr && h('div', { class: 'src' }, hasAudio() ? PlayBtn(c.tr.id) : null,
+      h('div', { class: 'col', style: 'gap:3px' }, h('span', { class: 'mono tiny muted' }, 'Transcript · ' + c.tr.id), h('span', { lang: 'es' }, c.tr.text))),
+    h('div', { class: 'rw' }, h('span', { class: 'tiny', style: 'font-weight:600;color:var(--ink2)' }, 'Suggested rewrite'), h('span', { lang: 'es' }, c.rewrite),
+      both && c.disagree ? h('span', { class: 'tiny muted' }, 'Slide and transcript disagree. This follows the transcript.') : null)
+  ];
+}
+function ConflictButtons(c) {
+  return h('div', { class: 'row g8', style: 'justify-content:flex-end' },
+    h('button', { class: 'btn', onclick: () => decide(c.id, 'keep') }, 'Keep mine ', h('kbd', {}, 'K')),
+    h('button', { class: 'btn pri', onclick: () => decide(c.id, 'edit') }, 'Use rewrite ', h('kbd', { style: 'color:#000' }, 'E')));
+}
+
+/* the merged note: green additions, yellow conflicts; hover widgets per DESIGN.md */
+function MergedDoc(o = {}) {
+  const clean = o.clean ?? S.clean;
+  const root = h('div', { class: 'doc merged ' + (clean ? 'clean' : ''), lang: 'es' }, mergedBlocks().map(b => {
+    if (b.t === 'h') return h('h1', {}, b.text);
+    if (b.t === 'm') return h('div', { class: 'mk' }, 'slide ' + b.n);
+    if (b.t === 'o') return h('div', {}, b.text);
+    if (b.t === 'add') {
+      const rev = S.dec[b.id] === 'revert', low = isLow(b);
+      return h('div', { class: 'b add' + (low ? ' low' : '') + (rev ? ' rev' : '') },
+        b.text, low && !clean ? h('span', { class: 'tag' }, 'low confidence') : null,
+        clean ? null : h('div', { class: 'w wa' }, h('div', { class: 'in' },
+          b.src.kind === 'transcript' && hasAudio() ? PlayBtn(b.src.id) : null,
+          h('span', { class: 'mono' }, b.src.id), h('span', { style: 'color:#bbb;max-width:260px;overflow:hidden;text-overflow:ellipsis' }, b.src.text),
+          h('button', { class: 'btn', onclick: () => toggleRevert(b.id) }, rev ? 'Restore' : 'Revert'))));
+    }
+    const d = S.dec[b.id], open = V === 'A' && S.active === b.id && !d;
+    return h('div', { class: 'b ' + (d ? 'res' : 'conf') + (S.active === b.id && !d ? ' active' : '') + (open ? ' open' : ''), 'data-id': b.id },
+      decidedText(b),
+      clean ? null : h('div', { class: 'w wc' }, h('div', { class: 'in' }, h('div', { class: 'cw' },
+        d ? [h('div', { class: 'row between' }, h('span', { class: 'tiny', style: 'font-weight:600' }, d === 'edit' ? 'Edited with the rewrite' : 'Kept as is'),
+          h('button', { class: 'btn sm', onclick: () => undecide(b.id) }, ic('undo', 12), 'Undo'))]
+          : [ConflictBody(b), ConflictButtons(b)]))));
+  }));
+  root.addEventListener('mouseover', e => {
+    const b = e.target.closest('.b'); if (!b || !b.querySelector(':scope>.w')) return;
+    const sc = b.closest('.scroll'), top = b.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0);
+    b.classList.toggle('below', top < (b.classList.contains('conf') ? 290 : 70));
+  });
+  return root;
+}
+
+function ExportBtns(o = {}) {
+  const lock = unresolved().length > 0, lg = o.lg ? ' lg' : '';
+  const b = (kind, idle, busy, done, icon) => h('button', { class: `btn${lg}${kind === 'notion' ? ' pri' : ''}${S.exp[kind] === 'done' ? ' ok' : ''}`, disabled: lock || S.exp[kind] === 'busy', title: lock ? 'Resolve every conflict to export' : null, onclick: () => doExport(kind) },
+    S.exp[kind] === 'done' ? ic('check', 14) : ic(icon, 14), S.exp[kind] === 'busy' ? busy : S.exp[kind] === 'done' ? done : idle);
+  return [b('notion', 'Send to Notion', 'Sending…', 'Sent to Notion', 'notion'), b('pdf', 'Download PDF', 'Preparing…', 'Downloaded', 'pdf')];
+}
+
+/* sources: subject, files (+ start times), windows, abbreviations — shared by all variants, laid out by each */
+function Sources(o = {}) {
+  const s = S.src, big = !!o.big;
+  if (S.sub) return SubPanel();
+  const subj = s.subject === '+new' ? (s.newName.trim() || '__new') : s.subject;
+  const browse = h('input', { type: 'file', multiple: true, accept: '.pdf,audio/*', style: 'display:none', onchange: e => addFiles(e.target.files) });
+  const empty = !s.pres && !s.audio.length;
+  return h('div', { class: 'col g20' },
+    h('div', { class: 'col g8' }, h('div', { class: 'lbl' }, 'Subject'),
+      h('div', { class: 'row wrap g8' },
+        S.subjects.map(n => h('button', { class: 'chip' + (s.subject === n ? ' on' : ''), onclick: () => { s.subject = n; render(); } }, n)),
+        h('button', { class: 'chip dash' + (s.subject === '+new' ? ' on' : ''), style: s.subject === '+new' ? 'border-style:solid' : '', onclick: () => { s.subject = '+new'; S.focusK = 'newsubj'; render(); } }, '+ New subject')),
+      s.subject === '+new' ? h('input', { 'data-k': 'newsubj', placeholder: 'Subject name', value: s.newName, oninput: e => { s.newName = e.target.value; refreshCTA(); } }) : null,
+      S.guia[subj] ? h('div', { class: 'tiny muted' }, `Guía docente · ${S.guia[subj]} terms`)
+        : h('div', { class: 'tiny muted' }, 'No guía docente yet · optional, builds the subject glossary. ', h('button', { class: 'ghost tiny', onclick: () => { S.guia[subj] = 296; render(); toast('Guía.pdf → 296 glossary terms'); } }, 'Add PDF'))),
+    h('div', { class: 'col g8' }, h('div', { class: 'lbl' }, 'Slides and audio'),
+      h('div', { class: 'dz' + (big ? ' big' : '') },
+        s.pres ? h('div', { class: 'file' }, ic('file'), h('div', { class: 'grow' }, s.pres.name), h('span', { class: 'sm muted' }, s.pres.slides + ' slides'), h('button', { class: 'x', 'aria-label': 'Remove', onclick: () => { s.pres = null; render(); } }, ic('x', 12))) : null,
+        s.audio.map((a, i) => h('div', { class: 'file' }, ic('mic'),
+          h('div', { class: 'grow' }, a.name, h('span', { class: 'muted' }, ` · ${a.min} min`)),
+          h('button', { class: 'ghost', title: 'Align one recognisable moment with a slide marker', onclick: () => { S.sub = { k: 'align', i }; S.al = { pos: 260, sel: null, play: false }; render(); } }, 'Don’t know'),
+          h('label', { class: 'row g6 sm', style: 'color:var(--ink2)' }, 'Started at',
+            h('input', { class: 'stin' + (startOk(a) ? '' : ' need'), 'data-k': 'st' + i, placeholder: '--:--', value: a.start, 'aria-label': a.name + ' start time', oninput: e => { a.start = e.target.value; a.guessed = false; refreshCTA(); } })),
+          h('button', { class: 'x', 'aria-label': 'Remove', onclick: () => { s.audio.splice(i, 1); render(); } }, ic('x', 12)))),
+        (!s.pres || s.audio.length < 2) ? h('div', { class: 'dzhint' }, empty ? 'Drop slides (PDF) and audio anywhere on this page' : 'Drop more files', ' · ',
+          h('button', { class: 'ghost', onclick: () => browse.click() }, 'browse'), ' · ', h('button', { class: 'ghost', title: 'Prototype shortcut', onclick: sampleFiles }, 'use sample files'), browse) : null,
+        s.audio.length && s.audio[0].guessed ? h('div', { class: 'tiny muted', style: 'text-align:center' }, 'parte1 start guessed from your first slide marker. Change it if the recording began earlier.') : null),
+      h('div', { class: 'row between sm muted' },
+        h('span', {}, `${markers().length} slide markers · window 1 = slide 1, 2 = 2, …${S.mapEdited ? ' (adjusted)' : ''}`),
+        h('button', { class: 'ghost', onclick: () => { buildMap(); S.sub = { k: 'map' }; render(); } }, 'Adjust'))),
+    s.abbr.length ? h('div', { class: 'col g8' }, h('div', { class: 'lbl' }, 'New abbreviations in your notes ', h('span', { style: 'font-weight:400' }, '· optional, saved for next time')),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px' }, s.abbr.map((a, i) => h('label', { class: 'row g8 mono sm', style: 'font-weight:500' }, a.k,
+        h('input', { class: 'grow', style: 'height:30px;font:400 13px Inter,sans-serif', placeholder: 'means…', value: a.v, oninput: e => { a.v = e.target.value; } }))))) : null
+  );
+}
+function refreshCTA() { // keep typing focus; just flip the Merge buttons
+  const r = mergeBlockReason();
+  document.querySelectorAll('[data-merge]').forEach(b => { b.disabled = !!r; });
+  document.querySelectorAll('[data-reason]').forEach(e => { e.textContent = r || e.dataset.ok || ''; });
+}
+function MergeFoot(o = {}) {
+  const r = mergeBlockReason();
+  return h('div', { class: 'row between g12', style: o.style || '' },
+    h('span', { class: 'sm muted', 'data-reason': '', 'data-ok': 'Your notes lock once you merge.' }, r || 'Your notes lock once you merge.'),
+    h('button', { class: 'btn pri' + (o.lg ? ' lg' : ''), 'data-merge': '', disabled: !!r, onclick: startMerge }, 'Merge', o.lg ? ic('right', 16) : null));
+}
+
+function SubPanel() {
+  const sub = S.sub, a = sub.k === 'align' ? S.src.audio[sub.i] : null;
+  const back = () => { clearInterval(alT); S.sub = null; render(); };
+  return h('div', { class: 'col g12' },
+    h('div', { class: 'row between' }, h('b', {}, sub.k === 'map' ? 'Match note windows to slides' : `When did ${a.name} start?`), h('button', { class: 'ghost', onclick: back }, sub.k === 'map' ? 'Done' : 'Back')),
+    sub.k === 'map' ? MapPanel() : AlignPanel(a, back));
+}
+function MapPanel() {
+  const rows = S.map, ch = () => { S.mapEdited = true; render(); };
+  return h('div', { class: 'col' },
+    h('div', { class: 'sm muted', style: 'margin-bottom:8px' }, `${rows.length} windows · ${S.src.pres ? S.src.pres.slides + ' slides' : 'no slides'} · by default window n = slide n. Change only the rows that are off.`),
+    rows.map((r, i) => h('div', { class: 'mrow' },
+      h('span', { class: 'mono' }, r.label), h('span', { class: 'mono muted tiny' }, `${r.from.slice(0, 5)}–${r.to.slice(0, 5)}`),
+      h('span', { lang: 'es', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (r.note[0] === '(' ? 'color:var(--mute)' : '') }, r.note),
+      h('select', { onchange: e => { r.slide = +e.target.value; ch(); } }, Array.from({ length: S.src.pres ? S.src.pres.slides : 12 }, (_, k) => k + 1).map(n => h('option', { value: n, selected: n === r.slide }, `S${n} · ${slideTitle(n)}`))),
+      h('span', { class: 'row g4', style: 'justify-content:flex-end' },
+        h('button', { class: 'x', title: 'Merge with next window', disabled: i === rows.length - 1, onclick: () => { const n = rows[i + 1]; r.label += ' + ' + n.label; r.to = n.to; r.note += ' / ' + n.note; rows.splice(i + 1, 1); ch(); } }, ic('merge', 14)),
+        h('button', { class: 'x', title: 'Delete window', onclick: () => { rows.splice(i, 1); ch(); } }, ic('x', 14))))));
+}
+function AlignPanel(a, back) {
+  const al = S.al, total = a.min * 60, bars = Array.from({ length: 56 }, (_, i) => 14 + Math.abs(Math.sin(i * 1.7) * 50) + (i * 37 % 17));
+  const start = al.sel != null ? fmt(toSec(markers()[al.sel].time) - al.pos, false) : null;
+  return h('div', { class: 'col g12' },
+    h('div', { class: 'sm', style: 'color:var(--ink2)' }, 'Play (or click the waveform) until you hear something you recognise, then click the slide marker where you wrote it.'),
+    h('div', { class: 'wv', onclick: e => { const r = e.currentTarget.getBoundingClientRect(); al.pos = Math.round((e.clientX - r.left) / r.width * total); render(); } },
+      bars.map((x, i) => h('i', { class: i / bars.length < al.pos / total ? 'p' : '', style: `height:${x}px` })), h('u', { style: `left:${al.pos / total * 100}%` })),
+    h('div', { class: 'row g12' },
+      h('button', { class: 'play big', 'aria-label': al.play ? 'Pause' : 'Play', onclick: () => { al.play = !al.play; clearInterval(alT); if (al.play) alT = setInterval(() => { al.pos = Math.min(total, al.pos + 2); render(); }, 220); render(); } }, ic(al.play ? 'pause' : 'play', 16)),
+      h('span', { class: 'mono', style: 'font-weight:600;font-size:22px' }, mmss(al.pos)), h('span', { class: 'sm muted', lang: 'es' }, SNIP[Math.floor(al.pos / 60) % 4])),
+    h('div', { class: 'col g6' }, h('div', { class: 'lbl' }, 'Your slide markers'),
+      markers().map((m, i) => h('button', { class: 'mkb' + (al.sel === i ? ' on' : ''), onclick: () => { al.sel = i; render(); } }, h('span', { class: 'mono tiny muted' }, m.time), h('span', { lang: 'es' }, `slide ${m.n} · ${slideTitle(m.n)}`)))),
+    h('div', { class: 'row between' },
+      h('span', { class: 'sm', style: 'color:var(--ink2)' }, start ? ['Audio ', mmss(al.pos), ' = ', markers()[al.sel].time, ' → started about ', h('b', { class: 'mono' }, start)] : 'Pick a marker'),
+      h('button', { class: 'btn pri', disabled: !start, onclick: () => { a.start = start; a.guessed = false; a.aligned = true; back(); } }, 'Use this time')));
+}
+
+function FlagHl(f) { const i = f.text.indexOf(f.term); return i < 0 ? f.text : [f.text.slice(0, i), h('span', { class: 'hl' }, f.term), f.text.slice(i + f.term.length)]; }
+function openNextFlag(id) {
+  const vis = S.flags.slice(0, visFlags()), i = vis.findIndex(f => f.id === id), nx = vis[i + 1];
+  S.flagOpen = nx ? nx.id : null; if (nx) S.focusK = 'fi-' + nx.id; render();
+}
+function FlagList() {
+  const vis = S.flags.slice(0, visFlags());
+  if (!vis.length) return h('div', { class: 'sm muted' }, S.proc.done ? 'Nothing looks misheard.' : 'Listening for unclear sentences…');
+  return h('div', { class: 'col g8' }, vis.map((f, i) => {
+    const open = S.flagOpen === f.id || (S.flagOpen == null && i === 0 && !vis.some(x => x.id === S.flagOpen));
+    return h('div', { class: 'fl' + (open ? ' open' : '') + (f.fixed ? ' fixed' : ''), onclick: () => { if (!open) { S.flagOpen = f.id; S.focusK = 'fi-' + f.id; render(); } } },
+      h('div', { class: 'row g10', style: 'align-items:flex-start' }, PlayBtn(f.id, 'sm'),
+        h('div', { class: 'grow col g4' }, h('div', { class: 'mono tiny muted' }, `${f.id} · ${f.time}${f.fixed ? ' · fixed' : ''}`),
+          open ? h('input', { class: 'finp', lang: 'es', 'data-k': 'fi-' + f.id, value: f.text, 'aria-label': 'Transcript sentence', oninput: e => { f.text = e.target.value; f.fixed = f.text !== f.orig; }, onchange: () => render(), onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); f.fixed = f.text !== f.orig; openNextFlag(f.id); } } })
+            : h('div', { class: 'sm', lang: 'es', style: 'color:var(--ink2)' }, FlagHl(f)))),
+      open ? h('div', { class: 'tiny muted' }, f.reason, ' · ', h('kbd', {}, 'Enter'), ' next') : null);
+  }));
+}
+
+function LectureGroups(cur) {
+  const status = { write: 'writing', sources: 'writing', processing: 'transcribing…', merging: 'merging…', export: 'done' };
+  const curStat = S.stage === 'review' ? (unresolved().length ? `${unresolved().length} to resolve` : 'done') : status[S.stage];
+  const stub = () => toast('Prototype: only this lecture is live');
+  const item = (n, st, y) => h('div', { class: 'lec', onclick: stub }, n, h('small', { class: y ? 'y' : '' }, st));
+  const curRow = h('div', { class: 'lec cur' }, S.sealed ? 'Tema 4 — ATM' : 'Untitled · 27 Oct', h('small', { class: S.stage === 'review' && unresolved().length ? 'y' : '' }, curStat));
+  const inAna = S.sealed && subjName() === 'Anatomía II';
+  return h('div', { class: 'col g16' },
+    S.sealed && !inAna ? h('div', { class: 'col', style: 'gap:2px' }, h('div', { class: 'lbl', style: 'padding:0 8px 6px' }, subjName()), curRow)
+      : S.sealed ? null : h('div', { class: 'col', style: 'gap:2px' }, h('div', { class: 'lbl', style: 'padding:0 8px 6px' }, 'Not uploaded'), curRow),
+    h('div', { class: 'col', style: 'gap:2px' }, h('div', { class: 'lbl', style: 'padding:0 8px 6px' }, 'Anatomía II'), inAna ? curRow : null, item('Músculos masticadores', '2 to resolve', 1), item('Hueso temporal', 'done')),
+    h('div', { class: 'col', style: 'gap:2px' }, h('div', { class: 'lbl', style: 'padding:0 8px 6px' }, 'Fisiología'), item('Saliva', 'transcribing…'), item('Deglución', 'done')));
+}
+function Settings() {
+  const row = (l, v, ph) => h('label', { class: 'row g12 sm', style: 'color:var(--ink2)' }, h('span', { style: 'width:110px' }, l), h('input', { class: 'grow mono', style: 'font-size:13px', value: v, placeholder: ph }));
+  return h('div', { class: 'scrim', onclick: e => { if (e.target === e.currentTarget) { S.settings = false; render(); } } },
+    h('div', { class: 'modal col g20' },
+      h('div', { class: 'row between' }, h('b', { style: 'font-size:18px' }, 'Settings'), h('button', { class: 'x', 'aria-label': 'Close', onclick: () => { S.settings = false; render(); } }, ic('x'))),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:32px' },
+        h('div', { class: 'col g20' },
+          h('div', { class: 'col g10' }, h('b', {}, 'API keys'), row('Groq', 'gsk_••••••••3f9a'), row('Anthropic', 'sk-ant-••••••81c2'), row('TypeSafe (Jev)', '', 'Paste key')),
+          h('div', { class: 'col g10' }, h('b', {}, 'Transcription'), h('div', { class: 'row', style: 'border:1px solid var(--line3);border-radius:8px;padding:3px;width:fit-content' },
+            h('button', { class: 'btn', style: 'background:var(--ink);color:#fff;border:0' }, 'whisper-large-v3 · ~$0.11/h'), h('button', { class: 'btn', style: 'border:0' }, 'turbo · ~$0.04/h, more errors'))),
+          h('div', { class: 'col g10' }, h('b', {}, 'Notion'), h('div', { class: 'row between', style: 'border:1px solid var(--line);border-radius:8px;padding:10px 12px' },
+            h('span', { class: 'col' }, h('b', { style: 'font-weight:500' }, 'Connected'), h('span', { class: 'tiny muted' }, 'Exports go to Apuntes / <subject>')), h('button', { class: 'btn sm' }, 'Disconnect')))),
+        h('div', { class: 'col g20' },
+          h('div', { class: 'col g10' }, h('div', { class: 'row between' }, h('b', {}, 'Abbreviations ', h('span', { class: 'muted', style: 'font-weight:400' }, '· 47')), h('button', { class: 'btn sm' }, '+ Add')),
+            h('div', { lang: 'es', style: 'border:1px solid var(--line);border-radius:8px' }, [['PTeLi', 'pterigoideo lateral'], ['PTeMe', 'pterigoideo medial'], ['ATM', 'articulación temporomandibular'], ['tto', 'tratamiento'], ['pc', 'paciente'], ['msc', 'músculo']].map(([k, v]) =>
+              h('div', { style: 'display:grid;grid-template-columns:110px 1fr;padding:8px 14px;border-bottom:1px solid var(--line)' }, h('span', { class: 'mono sm', style: 'font-weight:500' }, k), h('span', { class: 'sm' }, v))))),
+          h('div', { class: 'col g10' }, h('b', {}, 'Subjects'), h('div', { style: 'border:1px solid var(--line);border-radius:8px' }, S.subjects.map(n => h('div', { class: 'row between sm', style: 'padding:9px 14px;border-bottom:1px solid var(--line)' }, h('b', { style: 'font-weight:500' }, n),
+            h('span', { class: 'muted' }, S.guia[n] ? `Guía docente · ${S.guia[n]} terms` : 'No guía docente yet'))))))
+      )));
+}
+const GearBtn = () => h('button', { class: 'x', style: 'width:32px;height:32px', 'aria-label': 'Settings', title: 'Settings', onclick: () => { S.settings = true; render(); } }, ic('gear'));
+
+/* ============================== VARIANT A — One page ============================== */
+function A() {
+  const st = S.stage, review = st === 'review', un = unresolved().length;
+  const right = () => {
+    if (st === 'processing') return [h('span', { class: 'sm', style: 'color:var(--ink2)', 'data-prog': 'txt' }, `Transcribing ${S.proc.n} / ${S.proc.total}`), h('span', { class: 'bar', style: 'width:160px' }, h('i', { 'data-prog': 'bar', style: `width:${S.proc.n / S.proc.total * 100}%` }))];
+    if (st === 'merging') return [h('span', { class: 'sm', style: 'color:var(--ink2)' }, 'Merging…'), h('span', { class: 'bar ind', style: 'width:160px' }, h('i'))];
+    if (review) return un
+      ? [h('span', { class: 'pill y' }, `${un} to resolve`), h('button', { class: 'btn', onclick: nextConflict }, 'Next', ic('down', 14), h('kbd', {}, 'J')), h('button', { class: 'btn', disabled: true, title: 'Resolve every conflict to export' }, 'Export')]
+      : [h('span', { class: 'pill g row g6' }, ic('check', 14), 'All resolved'), h('button', { class: 'x', style: 'width:34px;height:34px;border:1px solid var(--line3);border-radius:8px;' + (S.clean ? 'background:var(--ink);color:#fff' : ''), title: 'Preview the clean final note', onclick: () => { S.clean = !S.clean; render(); } }, ic('eye')), ExportBtns()];
+    return [h('button', { class: 'btn pri', onclick: () => st === 'sources' ? closeSources() : openSources() }, ic('up', 14), 'Add sources')];
+  };
+  const showRail = st === 'processing';
+  return h('div', { style: 'display:flex;height:100%' },
+    h('aside', { class: 'side' }, h('div', { style: 'font-weight:700;font-size:16px;padding:0 8px' }, 'NoteMerge'),
+      h('button', { class: 'btn', style: 'justify-content:flex-start', onclick: () => { jump('write'); } }, ic('plus', 14), 'New lecture'),
+      LectureGroups(), h('div', { class: 'grow' }), h('button', { class: 'btn', style: 'border:0;background:none;justify-content:flex-start;color:var(--ink2)', onclick: () => { S.settings = true; render(); } }, ic('gear', 14), 'Settings')),
+    h('main', { style: 'flex:1;display:flex;flex-direction:column;min-width:0;position:relative' },
+      h('header', { class: 'hd' },
+        h('div', { class: 'row g12', style: 'align-items:baseline;min-width:0' }, h('span', { class: 'ttl' }, S.sealed ? subjName() + ' · Tema 4 — ATM' : 'Untitled lecture'),
+          h('span', { class: 'sm muted' }, review ? `${adds().filter(a => S.dec[a.id] !== 'revert').length} added · saved` : S.sealed ? 'Notes sealed' : 'Tue 27 Oct · started 09:02 · saved'), S.sealed && !review ? h('span', { class: 'row g4 tiny muted' }, ic('lock', 12), 'sealed') : null),
+        h('div', { class: 'row g10' }, right())),
+      h('div', { style: 'flex:1;display:flex;min-height:0;position:relative' },
+        h('div', { class: 'scroll grow', 'data-scroll': 'doc', style: 'padding:36px 0 120px;opacity:' + (st === 'merging' ? .5 : 1) }, review ? MergedDoc() : Editor()),
+        showRail ? h('aside', { class: 'scroll', style: 'width:330px;border-left:1px solid var(--line);background:var(--soft);padding:20px 18px;display:flex;flex-direction:column;gap:14px', 'data-scroll': 'rail' },
+          h('div', { class: 'col g4' }, h('b', { style: 'font-size:15px' }, `May be misheard · ${S.flags.slice(0, visFlags()).length}${S.proc.done ? '' : '…'}`),
+            h('span', { class: 'sm', style: 'color:var(--ink2)' }, 'Optional. Fix what you want while it transcribes. Anything left is marked low confidence.')),
+          FlagList(), h('div', { class: 'grow' }),
+          h('button', { class: 'btn pri lg', disabled: !S.proc.done, onclick: mergeNow }, S.proc.done ? 'Merge' : 'Merge when transcribed')) : null,
+        st === 'sources' ? h('section', { class: 'sheet', role: 'dialog', 'aria-label': 'Add sources' },
+          h('div', { class: 'row between', style: 'padding:16px 20px 4px' }, h('b', { style: 'font-size:16px' }, 'Add sources'), h('button', { class: 'x', 'aria-label': 'Close', onclick: closeSources }, ic('x'))),
+          h('div', { class: 'scroll', style: 'padding:10px 20px 16px' }, Sources()),
+          S.sub ? null : h('div', { style: 'border-top:1px solid var(--line);padding:12px 20px' }, MergeFoot())) : null,
+        st === 'write' ? h('div', { style: 'position:absolute;left:0;right:0;bottom:62px;display:flex;justify-content:center;pointer-events:none' }, h('span', { class: 'tiny muted', style: 'background:var(--side);border-radius:99px;padding:6px 12px' }, 'Type ', h('b', { class: 'mono' }, '//'), ' when the slide changes · drop slides or audio anywhere to merge')) : null)),
+    S.settings ? Settings() : null);
+}
+
+/* ============================== VARIANT B — Focus flow ============================== */
+const B_STEPS = ['Write', 'Sources', 'Check', 'Review', 'Export'];
+function B() {
+  const st = S.stage;
+  const step = { write: 0, sources: 1, processing: 2, merging: 2, review: 3, export: 4 }[st];
+  const sub = st === 'sources' && S.sub;
+  let body, foot;
+  if (st === 'write') {
+    body = h('div', { class: 'scroll', style: 'flex:1;padding:40px 0 40px', 'data-scroll': 'b' }, Editor());
+    foot = [h('span', { class: 'sm muted' }, 'Type ', h('b', { class: 'mono' }, '//'), ' when the slide changes'), h('button', { class: 'btn pri lg', onclick: openSources }, 'Add sources', ic('right', 16))];
+  } else if (st === 'sources') {
+    body = h('div', { class: 'scroll', style: 'flex:1;padding:36px 0 40px', 'data-scroll': 'b' }, h('div', { style: 'width:640px;max-width:calc(100% - 48px);margin:0 auto', class: 'col g20' },
+      sub ? null : h('div', { class: 'col g4' }, h('h2', { style: 'font-size:22px' }, 'What do you have for this lecture?'), h('span', { class: 'muted' }, 'Slides, audio, or both. Drop them anywhere.')),
+      Sources({ big: true })));
+    foot = sub ? [h('span'), h('span')] : [h('button', { class: 'ghost', onclick: closeSources }, '← Back to notes'), h('div', { class: 'row g16' }, h('span', { class: 'sm muted', 'data-reason': '', 'data-ok': 'Your notes lock once you merge.' }, mergeBlockReason() || 'Your notes lock once you merge.'),
+      h('button', { class: 'btn pri lg', 'data-merge': '', disabled: !!mergeBlockReason(), onclick: startMerge }, 'Merge', ic('right', 16)))];
+  } else if (st === 'processing') {
+    const vis = S.flags.slice(0, visFlags()), f = S.flags[S.fidx];
+    const card = f && S.fidx < vis.length ? h('div', { class: 'col g16', style: 'border:1.5px solid var(--ink);border-radius:14px;padding:22px 24px;box-shadow:0 8px 30px rgba(0,0,0,.07)' },
+      h('div', { class: 'row between' }, h('span', { class: 'lbl' }, `Sentence ${S.fidx + 1} of ${S.flags.length} may be misheard`), h('span', { class: 'mono tiny muted' }, `${f.id} · ${f.time}`)),
+      h('div', { class: 'row g16', style: 'align-items:flex-start' }, PlayBtn(f.id, 'big'),
+        h('div', { class: 'grow col g8' }, h('textarea', { 'data-k': 'bf-' + f.id, rows: 2, lang: 'es', style: 'font-size:19px;line-height:1.45', 'aria-label': 'Transcript sentence', oninput: e => { f.text = e.target.value; f.fixed = f.text !== f.orig; } }, f.text),
+          h('div', { class: 'sm', style: 'color:var(--ink2)' }, h('span', { class: 'hl' }, f.term === f.text ? 'Unclear audio' : f.term), ' · ', f.reason))),
+      h('div', { class: 'row between' }, h('span', { class: 'sm muted' }, 'Leave it as is to mark it low confidence.'),
+        h('button', { class: 'btn pri', onclick: bNext }, f.fixed ? 'Save and next' : 'Next', ' ', h('kbd', { style: 'color:#000' }, 'Enter'))))
+      : h('div', { class: 'row g10 muted', style: 'justify-content:center;padding:60px 0' }, h('span', { class: 'spin' }), S.proc.done ? 'Finishing…' : 'Listening for more unclear sentences…');
+    body = h('div', { style: 'flex:1;display:flex;justify-content:center;padding-top:44px' }, h('div', { style: 'width:720px;max-width:calc(100% - 48px)', class: 'col g20' },
+      h('div', { class: 'col g8' }, h('div', { class: 'row between' }, h('h2', { style: 'font-size:22px' }, 'Check the transcript'), h('span', { class: 'sm', style: 'color:var(--ink2)', 'data-prog': 'txt' }, `Transcribing ${S.proc.n} / ${S.proc.total}`)),
+        h('span', { class: 'bar' }, h('i', { 'data-prog': 'bar', style: `width:${S.proc.n / S.proc.total * 100}%` }))),
+      card));
+    foot = [h('span', { class: 'sm muted' }, h('kbd', {}, 'Space'), ' play · ', h('kbd', {}, 'Enter'), ' next · optional, skipped ones are marked low confidence'), h('button', { class: 'btn lg', disabled: !S.proc.done, onclick: mergeNow }, 'Skip rest and merge')];
+  } else if (st === 'merging') {
+    body = h('div', { class: 'col g12', style: 'flex:1;align-items:center;justify-content:center' }, h('span', { class: 'spin' }), h('b', {}, 'Merging your notes with the slides and transcript…'), h('span', { class: 'bar ind', style: 'width:220px' }, h('i')));
+  } else if (st === 'review') {
+    const u = unresolved(), c = confs().find(x => x.id === S.active) || u[0], total = confs().length, k = total - u.length + 1;
+    const card = c ? h('div', { class: 'col g14', style: 'gap:14px;border:1.5px solid var(--ink);border-radius:14px;padding:20px 22px' },
+      h('div', { class: 'row between' }, h('span', { class: 'lbl', style: 'color:var(--yelInk)' }, `Conflict ${k} of ${total}`), h('span', { class: 'row g6' }, confs().map(x => h('span', { style: `width:8px;height:8px;border-radius:50%;background:${S.dec[x.id] ? 'var(--greenInk)' : x.id === c.id ? 'var(--ink)' : 'var(--line3)'}` })))),
+      h('div', { class: 'col g4' }, h('span', { class: 'lbl' }, 'Your note'), h('div', { lang: 'es', style: 'background:var(--yel);border-radius:6px;padding:6px 10px;font-size:15px' }, c.orig)),
+      h('div', { style: `display:grid;gap:16px;grid-template-columns:${c.slide && c.tr ? '1fr 1fr' : '1fr'}` },
+        c.slide ? h('div', { class: 'col g4' }, h('span', { class: 'lbl' }, 'Slide · ' + c.slide.id), h('span', { lang: 'es' }, c.slide.text)) : null,
+        c.tr ? h('div', { class: 'src' }, hasAudio() ? PlayBtn(c.tr.id) : null, h('div', { class: 'col g4' }, h('span', { class: 'lbl' }, 'Transcript · ' + c.tr.id), h('span', { lang: 'es' }, c.tr.text))) : null),
+      h('div', { class: 'rw', style: 'gap:4px;padding:12px 14px' }, h('span', { class: 'lbl' }, 'Suggested rewrite'), h('span', { lang: 'es', style: 'font-size:15px' }, c.rewrite),
+        c.slide && c.tr && c.disagree ? h('span', { class: 'tiny muted' }, 'Slide and transcript disagree. This follows the transcript.') : null),
+      h('div', { class: 'row g10', style: 'justify-content:flex-end' },
+        h('button', { class: 'btn lg', onclick: () => decide(c.id, 'keep') }, 'Keep mine ', h('kbd', {}, 'K')),
+        h('button', { class: 'btn pri lg', onclick: () => decide(c.id, 'edit') }, 'Use rewrite ', h('kbd', { style: 'color:#000' }, 'E'))))
+      : h('div', { class: 'row g10', style: 'background:var(--green);color:var(--greenInk);border-radius:12px;padding:16px 18px;font-weight:600' }, ic('check'), 'All conflicts resolved. Check the additions below, then export.');
+    const ad = adds();
+    body = h('div', { class: 'scroll', style: 'flex:1;padding:32px 0 40px', 'data-scroll': 'b' }, h('div', { style: 'width:760px;max-width:calc(100% - 48px);margin:0 auto', class: 'col g20' },
+      card,
+      h('div', { class: 'col g8' }, h('div', { class: 'row between' }, h('b', {}, `Added to your notes · ${ad.filter(a => S.dec[a.id] !== 'revert').length}`), h('span', { class: 'sm muted' }, 'All kept by default. Revert any you don’t want.')),
+        h('div', { style: 'border:1px solid var(--line);border-radius:10px' }, ad.map(a => { const rev = S.dec[a.id] === 'revert';
+          return h('div', { class: 'row g10', style: 'padding:10px 12px;border-bottom:1px solid var(--line);' + (rev ? 'opacity:.55' : '') }, h('span', { style: 'width:4px;align-self:stretch;border-radius:2px;background:#8CC784' }),
+            a.src.kind === 'transcript' && hasAudio() ? PlayBtn(a.src.id, 'sm') : null,
+            h('div', { class: 'grow col', style: 'gap:2px' }, h('span', { lang: 'es', style: rev ? 'text-decoration:line-through' : '' }, a.text, isLow(a) ? h('span', { class: 'tag' }, 'low confidence') : null), h('span', { class: 'mono tiny muted' }, a.src.id)),
+            h('button', { class: 'btn sm', onclick: () => toggleRevert(a.id) }, rev ? 'Restore' : 'Revert')); })))));
+    foot = [h('span', { class: 'sm muted' }, u.length ? [h('kbd', {}, 'K'), ' keep · ', h('kbd', {}, 'E'), ' use rewrite'] : 'Ready'), h('button', { class: 'btn pri lg', disabled: u.length > 0, title: u.length ? 'Resolve every conflict to export' : null, onclick: () => { S.stage = 'export'; render(); } }, u.length ? `${u.length} conflict${u.length > 1 ? 's' : ''} left` : 'Export', u.length ? null : ic('right', 16))];
+  } else { // export
+    body = h('div', { class: 'scroll', style: 'flex:1;padding:32px 0 40px', 'data-scroll': 'b' }, h('div', { style: 'width:680px;max-width:calc(100% - 48px);margin:0 auto', class: 'col g16' },
+      h('div', { class: 'col g4' }, h('h2', { style: 'font-size:22px' }, 'Your final note'), h('span', { class: 'muted' }, 'Clean copy: no highlights, no citations. Editable once exported.')),
+      MergedDoc({ clean: true })));
+    foot = [h('button', { class: 'ghost', onclick: () => { S.stage = 'review'; render(); } }, '← Back to review'), h('div', { class: 'row g10' }, ExportBtns({ lg: true }))];
+  }
+  return h('div', { class: 'col', style: 'height:100%' },
+    h('header', { class: 'hd', style: 'height:56px;padding:0 24px;position:relative' },
+      h('div', { class: 'row g12', style: 'position:relative' }, h('span', { style: 'font-weight:700;font-size:16px' }, 'NoteMerge'),
+        h('button', { class: 'btn sm', style: 'border:0;background:var(--side)', onclick: () => { S.lecMenu = !S.lecMenu; render(); } }, S.sealed ? 'Anatomía II · Tema 4 — ATM' : 'Untitled lecture', ic('chev', 12)),
+        S.lecMenu ? h('div', { class: 'pop', style: 'left:90px;top:40px', onclick: () => { S.lecMenu = false; } }, LectureGroups()) : null),
+      h('nav', { class: 'row g6 sm', style: 'position:absolute;left:50%;transform:translateX(-50%)' }, B_STEPS.map((n, i) => h('span', { class: 'row g6', style: `color:${i === step ? 'var(--ink)' : i < step ? 'var(--greenInk)' : 'var(--mute)'};font-weight:${i === step ? 600 : 500}` },
+        h('span', { class: 'row', style: `width:20px;height:20px;border-radius:50%;justify-content:center;font-size:11px;font-weight:600;${i === step ? 'background:var(--ink);color:#fff' : i < step ? 'background:var(--green)' : 'border:1px solid var(--line3)'}` }, i < step ? ic('check', 11) : i + 1), n, i < 4 ? h('span', { style: 'width:18px;height:1px;background:var(--line3);margin:0 4px' }) : null))),
+      GearBtn()),
+    body,
+    foot ? h('footer', { style: 'height:72px;flex-shrink:0;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 32px;gap:16px' }, foot) : null,
+    S.settings ? Settings() : null);
+}
+function bNext() {
+  const f = S.flags[S.fidx]; if (!f) return;
+  S.fidx++; S.flagOpen = null;
+  if (S.fidx >= S.flags.length && S.proc.done) return mergeNow();
+  render();
+}
+
+/* ============================== VARIANT C — Dock ============================== */
+function C() {
+  const st = S.stage, review = st === 'review', un = unresolved().length;
+  const step = { write: 0, sources: 0, processing: 1, merging: 1, review: un ? 2 : 3, export: 3 }[st];
+  const stepper = h('div', { class: 'row g6 sm', style: 'padding:14px 18px;border-bottom:1px solid var(--line)' }, ['Sources', 'Check', 'Review', 'Export'].map((n, i) =>
+    h('span', { class: 'row g6', style: `color:${i === step ? 'var(--ink)' : i < step ? 'var(--greenInk)' : 'var(--mute)'};font-weight:${i === step ? 600 : 500}` }, i < step ? ic('check', 13) : h('span', { style: `width:7px;height:7px;border-radius:50%;background:${i === step ? 'var(--ink)' : 'var(--line3)'}` }), n, i < 3 ? h('span', { style: 'width:14px;height:1px;background:var(--line3);margin:0 2px' }) : null)));
+  let panel, foot;
+  if (st === 'write' || st === 'sources') {
+    panel = h('div', { style: 'padding:18px' }, Sources()); foot = S.sub ? null : MergeFoot({ style: 'padding:14px 18px' });
+  } else if (st === 'processing') {
+    panel = h('div', { class: 'col g14', style: 'padding:18px' },
+      h('div', { class: 'col g8' }, h('span', { class: 'sm', style: 'color:var(--ink2)', 'data-prog': 'txt' }, `Transcribing ${S.proc.n} / ${S.proc.total}`), h('span', { class: 'bar' }, h('i', { 'data-prog': 'bar', style: `width:${S.proc.n / S.proc.total * 100}%` }))),
+      h('div', { class: 'col g4' }, h('b', {}, `May be misheard · ${S.flags.slice(0, visFlags()).length}${S.proc.done ? '' : '…'}`), h('span', { class: 'tiny muted' }, 'Optional. Anything left is marked low confidence.')), FlagList());
+    foot = h('div', { style: 'padding:14px 18px' }, h('button', { class: 'btn pri lg', style: 'width:100%;justify-content:center', disabled: !S.proc.done, onclick: mergeNow }, S.proc.done ? 'Merge' : 'Merge when transcribed'));
+  } else if (st === 'merging') {
+    panel = h('div', { class: 'col g12', style: 'padding:40px 18px;align-items:center' }, h('span', { class: 'spin' }), h('span', { class: 'sm' }, 'Merging…'));
+  } else {
+    const rowc = c => { const d = S.dec[c.id]; return h('div', { class: 'col g8', style: `border:${S.active === c.id && !d ? '1.5px solid var(--ink)' : '1px solid var(--line)'};border-radius:10px;padding:10px 12px;background:${d ? '#fff' : 'var(--yel)'};cursor:pointer`,
+      onclick: () => { S.active = c.id; render(); scrollActive(); } },
+      h('div', { class: 'sm', lang: 'es' }, d ? decidedText(c) : c.orig),
+      d ? h('div', { class: 'row between' }, h('span', { class: 'tiny', style: 'font-weight:600;color:var(--greenInk)' }, d === 'edit' ? '✓ Used rewrite' : '✓ Kept mine'), h('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); undecide(c.id); } }, ic('undo', 12), 'Undo'))
+        : S.active === c.id ? h('div', { class: 'col g8', onclick: e => e.stopPropagation() }, h('hr'), ConflictBody(c), ConflictButtons(c)) : h('span', { class: 'tiny', style: 'color:var(--yelInk);font-weight:600' }, 'Click to review')); };
+    panel = h('div', { class: 'col g16', style: 'padding:18px' },
+      h('div', { class: 'col g8' }, h('div', { class: 'row between' }, h('b', {}, `Conflicts · ${un} left`), un ? h('span', { class: 'tiny muted' }, h('kbd', {}, 'K'), ' keep · ', h('kbd', {}, 'E'), ' rewrite') : h('span', { class: 'tiny', style: 'color:var(--greenInk);font-weight:600' }, '✓ all resolved')), confs().map(rowc)),
+      h('div', { class: 'col g8' }, h('b', {}, `Added · ${adds().filter(a => S.dec[a.id] !== 'revert').length}`),
+        adds().map(a => { const rev = S.dec[a.id] === 'revert'; return h('div', { class: 'row g8', style: 'padding:8px 10px;border-radius:8px;background:var(--green);' + (rev ? 'opacity:.5' : '') },
+          a.src.kind === 'transcript' && hasAudio() ? PlayBtn(a.src.id, 'sm') : null,
+          h('div', { class: 'grow col', style: 'gap:1px' }, h('span', { class: 'sm', lang: 'es', style: rev ? 'text-decoration:line-through' : '' }, a.text, isLow(a) ? h('span', { class: 'tag' }, 'low confidence') : null), h('span', { class: 'mono tiny muted' }, a.src.id)),
+          h('button', { class: 'x', style: 'width:auto;padding:0 6px;font-size:12px', onclick: () => toggleRevert(a.id) }, rev ? 'Restore' : 'Revert')); })));
+    foot = h('div', { class: 'col g8', style: 'padding:14px 18px' },
+      h('div', { class: 'row g8' }, ExportBtns()), un ? h('span', { class: 'tiny muted' }, 'Export unlocks when every conflict is resolved.') : h('button', { class: 'ghost tiny', style: 'text-align:left', onclick: () => { S.clean = !S.clean; render(); } }, S.clean ? 'Show highlights' : 'Preview the clean final note'));
+  }
+  return h('div', { class: 'col', style: 'height:100%' },
+    h('header', { class: 'hd', style: 'padding:0 20px' },
+      h('div', { class: 'row g12', style: 'position:relative;align-items:baseline' },
+        h('b', { style: 'font-size:16px;align-self:center' }, 'NoteMerge'),
+        h('button', { class: 'btn sm', style: 'border:0;background:var(--side);align-self:center', onclick: () => { S.lecMenu = !S.lecMenu; render(); } }, S.sealed ? subjName() + ' · Tema 4 — ATM' : 'Untitled lecture', ic('chev', 12)),
+        h('span', { class: 'sm muted' }, review ? 'saved' : S.sealed ? 'sealed' : 'Tue 27 Oct · started 09:02 · saved'),
+        S.lecMenu ? h('div', { class: 'pop', style: 'left:90px;top:40px', onclick: () => { S.lecMenu = false; } }, LectureGroups(), h('hr', { style: 'margin:8px 0' }), h('button', { class: 'btn sm', onclick: () => jump('write') }, ic('plus', 12), 'New lecture')) : null),
+      GearBtn()),
+    h('div', { style: 'flex:1;display:flex;min-height:0' },
+      h('div', { class: 'scroll grow', 'data-scroll': 'doc', style: 'padding:36px 0 100px;opacity:' + (st === 'merging' ? .5 : 1) }, review ? MergedDoc() : Editor()),
+      h('aside', { style: 'width:370px;flex-shrink:0;border-left:1px solid var(--line);background:var(--soft);display:flex;flex-direction:column;min-height:0' }, stepper,
+        h('div', { class: 'scroll grow', 'data-scroll': 'dock' }, panel), foot ? h('div', { style: 'border-top:1px solid var(--line);background:#fff' }, foot) : null)),
+    S.settings ? Settings() : null);
+}
+
+/* ============================== shell: render, switcher, keys ============================== */
+/* D = B's write → sources → check, then C's note + dock for review and export */
+function D() { return ['review', 'export'].includes(S.stage) ? C() : B(); }
+const VARIANTS = { A: { name: 'One page', view: A }, B: { name: 'Focus flow', view: B }, C: { name: 'Dock', view: C }, D: { name: 'Focus in, dock out', view: D } };
+function render() {
+  const act = document.activeElement, key = act && act.dataset && act.dataset.k;
+  const sel = act && typeof act.selectionStart === 'number' ? [act.selectionStart, act.selectionEnd] : null;
+  const sc = {}; document.querySelectorAll('[data-scroll]').forEach(e => sc[e.dataset.scroll] = e.scrollTop);
+  $('#app').replaceChildren(VARIANTS[V].view());
+  document.querySelectorAll('[data-scroll]').forEach(e => { if (sc[e.dataset.scroll] != null) e.scrollTop = sc[e.dataset.scroll]; });
+  const fk = S.focusK || key;
+  if (fk) {
+    const el = document.querySelector(`[data-k="${fk}"]`);
+    if (el) {
+      el.focus();
+      if (S.focusK && el.isContentEditable) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+      else if (sel && !S.focusK && el.setSelectionRange) { try { el.setSelectionRange(...sel); } catch (e) { } }
+      else if (S.focusK && el.setSelectionRange) { try { const n = el.value.length; el.setSelectionRange(n, n); } catch (e) { } }
+    }
+    S.focusK = null;
+  }
+  renderBar();
+}
+function setVariant(v) { V = v; const u = new URL(location.href); u.searchParams.set('variant', v); history.replaceState(null, '', u); render(); }
+function cycle(d) { const ks = Object.keys(VARIANTS); setVariant(ks[(ks.indexOf(V) + d + ks.length) % ks.length]); }
+function renderBar() {
+  if (new URLSearchParams(location.search).get('bar') === '0') return;
+  const bar = $('#bar'); bar.replaceChildren(
+    h('button', { 'aria-label': 'Previous variant', onclick: () => cycle(-1) }, '←'), h('b', {}, `${V} — ${VARIANTS[V].name}`), h('button', { 'aria-label': 'Next variant', onclick: () => cycle(1) }, '→'), h('i'),
+    h('select', { 'aria-label': 'Jump to stage', onchange: e => { const v = e.target.value; e.target.value = ''; if (v) jump(v); } }, h('option', { value: '' }, `Jump · ${S.stage}`), ['write', 'sources', 'check', 'review', 'export'].map(s => h('option', { value: s }, s))),
+    h('button', { title: 'Restart', onclick: () => jump('write') }, '↺'));
+}
+addEventListener('keydown', e => {
+  const t = e.target, typing = t.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(t.tagName);
+  if (e.key === 'Escape' && S.settings) { S.settings = false; render(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (S.stage === 'review' && !typing) {
+    if (e.key === 'j' || e.key === 'n') nextConflict();
+    else if (S.active && e.key === 'k') decide(S.active, 'keep');
+    else if (S.active && (e.key === 'e' || e.key === 'Enter')) decide(S.active, 'edit');
+  }
+  if ((V === 'B' || V === 'D') && S.stage === 'processing') {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bNext(); }
+    else if (e.key === ' ' && S.flags[S.fidx] && t.tagName !== 'TEXTAREA') { e.preventDefault(); play(S.flags[S.fidx].id); }
+  }
+  if (!typing && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) cycle(e.key === 'ArrowRight' ? 1 : -1);
+});
+/* drop files anywhere */
+addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+addEventListener('drop', e => {
+  e.preventDefault(); document.body.classList.remove('dragging');
+  if (S.sealed || !e.dataTransfer.files.length) return;
+  if (S.stage === 'write' && V !== 'C') openSources();
+  addFiles(e.dataTransfer.files);
+});
+if (!VARIANTS[V]) V = 'A';
+render();
+</script>
+</body>
+</html>
