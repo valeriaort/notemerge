@@ -14,6 +14,7 @@ import { notemergeSchema } from "../slideMarkerBlock.js";
 interface WriteProps {
   lectureId: string;
   onBack: () => void;
+  onContinueToSources?: () => void;
 }
 
 type SaveState = "saved" | "saving" | "idle";
@@ -105,9 +106,10 @@ interface EditorViewProps {
   initialDoc: NotesDocument;
   lectureId: string;
   onBack: () => void;
+  onContinueToSources?: () => void;
 }
 
-function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
+function EditorView({ initialDoc, lectureId, onBack, onContinueToSources }: EditorViewProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -230,6 +232,15 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
               ? strings.write.savedIndicator
               : ""}
         </span>
+        {onContinueToSources && (
+          <button
+            style={{ ...styles.backBtn, color: "#111", fontWeight: 600 }}
+            onClick={onContinueToSources}
+            data-testid="continue-to-sources"
+          >
+            {strings.write.continueToSources} →
+          </button>
+        )}
       </div>
       <div style={styles.editorWrapper} data-testid="notes-editor">
         <BlockNoteView editor={editor} onChange={handleChange} />
@@ -238,7 +249,7 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
   );
 }
 
-export function Write({ lectureId, onBack }: WriteProps) {
+export function Write({ lectureId, onBack, onContinueToSources }: WriteProps) {
   const [initialDoc, setInitialDoc] = useState<NotesDocument | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -267,6 +278,11 @@ export function Write({ lectureId, onBack }: WriteProps) {
   }
 
   return (
-    <EditorView initialDoc={initialDoc} lectureId={lectureId} onBack={onBack} />
+    <EditorView
+      initialDoc={initialDoc}
+      lectureId={lectureId}
+      onBack={onBack}
+      onContinueToSources={onContinueToSources}
+    />
   );
 }

@@ -6,6 +6,8 @@ import type Database from "better-sqlite3";
 import type { Providers } from "../providers/interfaces.js";
 import { lectureRoutes } from "./routes/lectures.js";
 import { markerRoutes } from "./routes/markers.js";
+import { subjectRoutes } from "./routes/subjects.js";
+import { sourcesRoutes } from "./routes/sources.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +22,8 @@ export function createApp(
 
   app.use("/api/lectures", lectureRoutes(db, dataDir));
   app.use("/api/lectures", markerRoutes(db));
+  app.use("/api/lectures", sourcesRoutes(db));
+  app.use("/api/subjects", subjectRoutes(db));
 
   // Reserved for Notion OAuth ticket (#29)
   app.get("/api/notion/callback", (_req, res) => {

@@ -82,6 +82,19 @@ test("seedLecture helper creates a lecture accessible by ID", async ({ page }) =
   await expect(editor).toBeVisible();
 });
 
+test("Continue to Sources button navigates to Sources screen", async ({ page }) => {
+  const lecture = await seedLecture(srv.url);
+  await openLecturePage(page, srv.url, lecture.id);
+
+  // Click "Continue to Sources" — keyboard-accessible button in the toolbar
+  await page.click("[data-testid='continue-to-sources']");
+
+  // Sources screen should render
+  await page.waitForSelector("[data-testid='sources-screen']", { timeout: 5000 });
+  await page.waitForSelector("[data-testid='drop-zone']");
+  await page.waitForSelector("[data-testid='submit-sources']");
+});
+
 test("typing // with keyboard only inserts a slide marker divider", async ({ page }) => {
   const lecture = await seedLecture(srv.url);
   await openLecturePage(page, srv.url, lecture.id);

@@ -12,6 +12,8 @@ import {
   ensureDefaultUser,
 } from "../db.js";
 
+const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
+
 export function lectureRoutes(db: Database.Database, dataDir: string): Router {
   const router = Router();
 
@@ -43,6 +45,16 @@ export function lectureRoutes(db: Database.Database, dataDir: string): Router {
     const { notesData } = req.body as { notesData?: string };
     if (typeof notesData !== "string") {
       res.status(400).json({ error: "notesData must be a string" });
+      return;
+    }
+
+    const existing = getLecture(db, req.params["id"]!);
+    if (!existing) {
+      res.status(404).json({ error: "Lecture not found" });
+      return;
+    }
+    if (SEALED_STAGES.has(existing.stage)) {
+      res.status(403).json({ error: "Notes are sealed and cannot be edited" });
       return;
     }
 

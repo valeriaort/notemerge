@@ -8,6 +8,7 @@ export const EMPTY_NOTES_DOCUMENT: NotesDocument = { blocks: [], meta: {} };
 export type LectureStage =
   | "writing"
   | "sources"
+  | "sealed"
   | "transcript-check"
   | "merge"
   | "review"
@@ -20,8 +21,16 @@ export interface Lecture {
   subjectId: string | null;
   dataDir: string;
   notesData: string;
+  presentationPath: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface Subject {
+  id: string;
+  name: string;
+  userId: string;
+  createdAt: number;
 }
 
 export interface User {

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { Lecture, SlideMarker, User } from "../shared/types.js";
+import type { Lecture, SlideMarker, Subject, User } from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -10,9 +10,21 @@ export type DbRow = {
   subject_id: string | null;
   data_dir: string;
   notes_data: string;
+  presentation_path: string | null;
   created_at: number;
   updated_at: number;
 };
+
+export type SubjectRow = {
+  id: string;
+  name: string;
+  user_id: string;
+  created_at: number;
+};
+
+function rowToSubject(row: SubjectRow): Subject {
+  return { id: row.id, name: row.name, userId: row.user_id, createdAt: row.created_at };
+}
 
 function rowToLecture(row: DbRow): Lecture {
   return {
@@ -22,6 +34,7 @@ function rowToLecture(row: DbRow): Lecture {
     subjectId: row.subject_id,
     dataDir: row.data_dir,
     notesData: row.notes_data,
+    presentationPath: row.presentation_path ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -36,6 +49,13 @@ export function openDb(dbPath: string) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS subjects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id),
       created_at INTEGER NOT NULL
     );
 
@@ -57,6 +77,10 @@ export function openDb(dbPath: string) {
       block_id TEXT NOT NULL
     );
   `);
+
+  // Additive migrations — safe to run repeatedly
+  try { db.exec("ALTER TABLE users ADD COLUMN last_used_subject_id TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE lectures ADD COLUMN presentation_path TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -171,4 +195,56 @@ export function updateLectureNotes(
 
   if (result.changes === 0) return undefined;
   return getLecture(db, id);
+}
+
+// Subject functions
+
+export function createSubject(
+  db: Database.Database,
+  id: string,
+  name: string,
+  userId: string,
+): Subject {
+  const now = Date.now();
+  db.prepare(
+    "INSERT INTO subjects (id, name, user_id, created_at) VALUES (?, ?, ?, ?)",
+  ).run(id, name, userId, now);
+  return rowToSubject(
+    db.prepare("SELECT * FROM subjects WHERE id = ?").get(id) as SubjectRow,
+  );
+}
+
+export function listSubjects(db: Database.Database): Subject[] {
+  return (db.prepare("SELECT * FROM subjects ORDER BY created_at ASC").all() as SubjectRow[]).map(rowToSubject);
+}
+
+export function getSubject(db: Database.Database, id: string): Subject | undefined {
+  const row = db.prepare("SELECT * FROM subjects WHERE id = ?").get(id) as SubjectRow | undefined;
+  return row ? rowToSubject(row) : undefined;
+}
+
+export function getLastUsedSubject(db: Database.Database): Subject | null {
+  const user = db.prepare("SELECT last_used_subject_id FROM users LIMIT 1").get() as { last_used_subject_id: string | null } | undefined;
+  if (!user?.last_used_subject_id) return null;
+  const subject = getSubject(db, user.last_used_subject_id);
+  return subject ?? null;
+}
+
+// Seal a lecture: set stage to "sealed", assign subject, store presentation path
+export function sealLecture(
+  db: Database.Database,
+  lectureId: string,
+  subjectId: string,
+  presentationPath: string,
+): Lecture | undefined {
+  const now = Date.now();
+  const result = db
+    .prepare(
+      `UPDATE lectures SET stage = 'sealed', subject_id = ?, presentation_path = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(subjectId, presentationPath, now, lectureId);
+  if (result.changes === 0) return undefined;
+  db.prepare("UPDATE users SET last_used_subject_id = ?").run(subjectId);
+  return getLecture(db, lectureId);
 }
