@@ -82,3 +82,17 @@ export type WritingOperation =
   | { type: "add_after"; blockId: string; text: string; sourceIds: string[] }
   | { type: "add_at_window"; windowId: string; text: string; sourceIds: string[] }
   | { type: "rewrite"; blockId: string; text: string; sourceIds: string[] };
+
+export interface AbbreviationPair {
+  id: string;
+  userId: string;
+  abbreviation: string;
+  expansion: string;
+  matchCaseExactly: boolean;
+  createdAt: number;
+}
+
+export interface UnknownToken {
+  text: string;
+  frequency: number;
+}
