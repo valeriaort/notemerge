@@ -129,11 +129,13 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
   const [newSubjectName, setNewSubjectName] = useState("");
   const [presentationFile, setPresentationFile] = useState<File | null>(null);
+  const [guiaFile, setGuiaFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sealedSlides, setSealedSlides] = useState<ExtractedSlide[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const guiaInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     Promise.all([
@@ -206,14 +208,29 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
         setError(body.error ?? "Upload failed");
         return;
       }
-      const body = await res.json() as { slides?: ExtractedSlide[] };
+      const body = await res.json() as {
+        lecture: Lecture;
+        subject: Subject;
+        slides?: ExtractedSlide[];
+      };
+
+      // If a guía was provided for a new subject, upload it now (non-blocking)
+      if (guiaFile && pickerMode === "new") {
+        const guiaForm = new FormData();
+        guiaForm.append("guia", guiaFile);
+        await fetch(`/api/subjects/${body.subject.id}/guia`, {
+          method: "POST",
+          body: guiaForm,
+        }).catch(() => { /* non-blocking */ });
+      }
+
       setSealedSlides(body.slides ?? []);
     } catch {
       setError("Upload failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
-  }, [presentationFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
+  }, [presentationFile, guiaFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
 
   const canSubmit = !submitting && (pickerMode === "new" ? newSubjectName.trim() !== "" : selectedSubjectId !== "");
 
@@ -292,23 +309,53 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
                 </button>
               </div>
             ) : (
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input
-                  type="text"
-                  style={styles.input}
-                  placeholder={strings.sources.newSubjectPlaceholder}
-                  value={newSubjectName}
-                  onChange={(e) => setNewSubjectName(e.target.value)}
-                  autoFocus
-                  data-testid="new-subject-input"
-                />
-                <button
-                  style={styles.backBtn}
-                  onClick={() => setPickerMode("existing")}
-                >
-                  Cancel
-                </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <input
+                    type="text"
+                    style={styles.input}
+                    placeholder={strings.sources.newSubjectPlaceholder}
+                    value={newSubjectName}
+                    onChange={(e) => setNewSubjectName(e.target.value)}
+                    autoFocus
+                    data-testid="new-subject-input"
+                  />
+                  <button
+                    style={styles.backBtn}
+                    onClick={() => setPickerMode("existing")}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {/* Optional guía docente upload for new subject */}
+                <div>
+                  <div style={styles.fieldLabel}>{strings.glossary.guiaLabel}</div>
+                  <div
+                    style={dropZoneStyle(guiaFile !== null)}
+                    onClick={() => guiaInputRef.current?.click()}
+                    data-testid="guia-drop-zone"
+                  >
+                    {guiaFile
+                      ? `${strings.glossary.guiaAccepted}: ${guiaFile.name}`
+                      : strings.glossary.guiaDropHint}
+                  </div>
+                  <input
+                    ref={guiaInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    style={{ display: "none" }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) setGuiaFile(f); }}
+                    data-testid="guia-file-input"
+                  />
+                </div>
               </div>
+            )}
+            {/* No-glossary hint for existing subject */}
+            {pickerMode === "existing" && selectedSubjectId &&
+              subjects.find((sub) => sub.id === selectedSubjectId)?.glossaryTerms?.length === 0 && (
+              <p style={{ fontSize: "0.8rem", color: "#888", margin: "0.25rem 0 0" }}>
+                {strings.glossary.noGlossaryHint}
+              </p>
             )}
           </div>
 
@@ -332,6 +379,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
               onChange={handleFileChange}
               data-testid="file-input"
             />
+            {/* (guia file input rendered inside the picker section above) */}
           </div>
 
           {error && <p style={styles.error}>{error}</p>}

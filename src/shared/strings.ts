@@ -45,4 +45,18 @@ export const strings = {
     saveFailed: "Failed to save notes. Please try again.",
     loadFailed: "Failed to load lecture.",
   },
+  glossary: {
+    noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",
+    guiaLabel: "Guía docente (optional)",
+    guiaDropHint: "Drop the guía docente PDF here (optional)",
+    guiaAccepted: "Guía PDF ready",
+    subjectSettingsTitle: "Subject Settings",
+    glossaryTermCount: (n: number) => `${n} term${n === 1 ? "" : "s"} in glossary`,
+    noGlossaryYet: "No glossary yet.",
+    uploadGuiaButton: "Upload Guía Docente",
+    uploadingGuia: "Uploading…",
+    guiaUploadSuccess: (n: number) => `Glossary built: ${n} term${n === 1 ? "" : "s"}.`,
+    guiaUploadError: "Upload failed. Please try again.",
+    noTextError: "The PDF has no extractable text. Try a different file.",
+  },
 };
