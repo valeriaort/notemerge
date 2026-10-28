@@ -37,6 +37,8 @@ export const strings = {
     subjectRequiredError: "A subject is required.",
     successMessage: "Notes sealed. Ready for the next step.",
     fileAccepted: "PDF ready",
+    slidesExtracted: "slides extracted",
+    continueButton: "Continue",
   },
   errors: {
     lectureNotFound: "Lecture not found.",
