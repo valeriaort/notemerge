@@ -72,6 +72,8 @@ const hooks = {
       {
         command:
           "[ -f package.json ] && npm install && (grep -q playwright package.json && npx playwright install chromium || true) || true",
+        // Cold node_modules (isolated per sandbox) took 51s on #4 against the 60s default.
+        timeoutMs: 10 * 60 * 1000,
       },
     ],
   },
