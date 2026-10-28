@@ -44,10 +44,17 @@ const MERGE_MODEL = "claude-opus-4-8"; // merges of parallel branches need care
 // Caches are bind-mounted so parallel sandboxes don't re-download everything.
 mkdirSync(".sandcastle/cache/npm", { recursive: true });
 mkdirSync(".sandcastle/cache/playwright", { recursive: true });
-const sandbox = () =>
-  docker({
+// node_modules is isolated per sandbox: the container installs Linux native
+// modules (better-sqlite3) which must never overwrite the host's macOS build.
+const sandbox = (name: string) => {
+  mkdirSync(`.sandcastle/cache/node_modules/${name}`, { recursive: true });
+  return docker({
     imageName: "notemerge-sandcastle",
     mounts: [
+      {
+        hostPath: `.sandcastle/cache/node_modules/${name}`,
+        sandboxPath: "/home/agent/workspace/node_modules",
+      },
       { hostPath: ".sandcastle/cache/npm", sandboxPath: "/home/agent/.npm" },
       {
         hostPath: ".sandcastle/cache/playwright",
@@ -55,6 +62,7 @@ const sandbox = () =>
       },
     ],
   });
+};
 
 // Runs in every sandbox before the agent starts. No-ops until ticket #3 has
 // created package.json; installs the Playwright browser once it is a dependency.
@@ -180,7 +188,7 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
     batch.map((issue) =>
       sandcastle.run({
         hooks,
-        sandbox: sandbox(),
+        sandbox: sandbox(`issue-${issue.number}`),
         branchStrategy: { type: "branch", branch: `sandcastle/issue-${issue.number}` },
         name: `issue-${issue.number}`,
         maxIterations: 40,
@@ -213,7 +221,7 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
 
   await sandcastle.run({
     hooks,
-    sandbox: sandbox(),
+    sandbox: sandbox("merger"),
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.claudeCode(MERGE_MODEL),

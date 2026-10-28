@@ -8,7 +8,7 @@ For each branch:
 
 1. Run `git merge <branch> --no-edit`
 2. If there are conflicts, read both sides and keep the intent of both (these branches were built in parallel; shared files such as schema, route registry, config and strings usually need both additions). Never drop either side's tests.
-3. After each merge, run whichever of `npm run typecheck`, `npm run test` exist and make them pass before continuing. Fix integration problems yourself.
+3. After each merge, run whichever of `npm run typecheck`, `npm run test`, `npm run test:browser` exist and make them pass before continuing. Fix integration problems yourself.
 
 Make a commit for any fixes beyond the merge commits.
 
