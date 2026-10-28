@@ -81,3 +81,30 @@ test("seedLecture helper creates a lecture accessible by ID", async ({ page }) =
   const editor = page.locator("[data-testid='notes-editor']");
   await expect(editor).toBeVisible();
 });
+
+test("typing // with keyboard only inserts a slide marker divider", async ({ page }) => {
+  const lecture = await seedLecture(srv.url);
+  await openLecturePage(page, srv.url, lecture.id);
+
+  const editorContent = page
+    .locator("[data-testid='notes-editor'] [contenteditable='true']")
+    .first();
+  await editorContent.click();
+  // Type some notes, then a slide transition — no mouse
+  await editorContent.type("Notes before slide");
+  await editorContent.press("Enter");
+  await editorContent.type("//");
+
+  // Wait for the divider to appear (the // paragraph is replaced by a slideMarker block)
+  await page.waitForSelector("[data-testid='slide-marker']", { timeout: 5000 });
+
+  // Wait for autosave so the slideMarker block is persisted in notesData
+  await page.waitForSelector("text=Saved", { timeout: 5000 });
+
+  // Reload — the divider must survive
+  await page.reload();
+  await page.waitForSelector("[data-testid='notes-editor']");
+
+  const marker = page.locator("[data-testid='slide-marker']");
+  await expect(marker).toBeVisible();
+});

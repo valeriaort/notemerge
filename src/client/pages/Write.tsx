@@ -2,12 +2,14 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/ariakit";
 import "@blocknote/ariakit/style.css";
-import type { BlockNoteEditor, PartialBlock } from "@blocknote/core";
+import type { PartialBlock } from "@blocknote/core";
+import { v4 as uuidv4 } from "uuid";
 import type { Lecture, NotesDocument } from "../../shared/types.js";
 import { EMPTY_NOTES_DOCUMENT } from "../../shared/types.js";
 import { updateMeta } from "../../shared/blockIdentity.js";
 import type { BlockLike } from "../../shared/blockIdentity.js";
 import { strings } from "../../shared/strings.js";
+import { notemergeSchema } from "../slideMarkerBlock.js";
 
 interface WriteProps {
   lectureId: string;
@@ -59,6 +61,46 @@ function parseNotesDoc(raw: string): NotesDocument {
   return EMPTY_NOTES_DOCUMENT;
 }
 
+function blockPlainText(block: unknown): string {
+  const b = block as { content?: unknown };
+  if (!Array.isArray(b.content)) return "";
+  return (b.content as unknown[])
+    .map((item) => {
+      const it = item as { type?: string; text?: string };
+      if (it.type === "text" && typeof it.text === "string") return it.text;
+      return "";
+    })
+    .join("");
+}
+
+type AnyBlock = { id: string; type?: string; props?: Record<string, unknown>; children?: AnyBlock[] };
+
+function flatBlocks(blocks: AnyBlock[]): AnyBlock[] {
+  const out: AnyBlock[] = [];
+  for (const b of blocks) {
+    out.push(b);
+    if (b.children && b.children.length > 0) out.push(...flatBlocks(b.children));
+  }
+  return out;
+}
+
+async function apiPostMarker(
+  lectureId: string,
+  markerId: string,
+  timestamp: number,
+  blockId: string,
+): Promise<void> {
+  await fetch(`/api/lectures/${lectureId}/markers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timestamp, blockId }),
+  });
+}
+
+async function apiDeleteMarker(lectureId: string, markerId: string): Promise<void> {
+  await fetch(`/api/lectures/${lectureId}/markers/${markerId}`, { method: "DELETE" });
+}
+
 interface EditorViewProps {
   initialDoc: NotesDocument;
   lectureId: string;
@@ -74,15 +116,17 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
 
   // BlockNote rejects empty array; pass undefined to get its default empty paragraph
   const editor = useCreateBlockNote({
+    schema: notemergeSchema,
     initialContent:
       initialDoc.blocks.length > 0
         ? (initialDoc.blocks as PartialBlock[])
         : undefined,
   });
 
-  const prevBlocksRef = useRef<BlockLike[]>(
-    editor.document as unknown as BlockLike[],
-  );
+  type NotemergeEditor = typeof editor;
+
+  const prevDocRef = useRef<AnyBlock[]>(editor.document as unknown as AnyBlock[]);
+  const prevBlocksRef = useRef<BlockLike[]>(editor.document as unknown as BlockLike[]);
 
   const save = useCallback(
     async (doc: NotesDocument) => {
@@ -104,8 +148,45 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
   );
 
   const handleChange = useCallback(
-    (changedEditor: BlockNoteEditor) => {
-      const newBlocks = changedEditor.document as unknown as BlockLike[];
+    (changedEditor: NotemergeEditor) => {
+      const newDoc = changedEditor.document as unknown as AnyBlock[];
+
+      // Detect // typed in any paragraph block → replace with a slideMarker block
+      const allNew = flatBlocks(newDoc);
+      const triggerBlock = allNew.find(
+        (b) => b.type === "paragraph" && blockPlainText(b) === "//",
+      );
+
+      if (triggerBlock) {
+        const markerId = uuidv4();
+        const timestamp = Date.now();
+        // Defer so we don't mutate the editor inside its own onChange
+        setTimeout(() => {
+          try {
+            changedEditor.updateBlock(triggerBlock as Parameters<typeof changedEditor.updateBlock>[0], {
+              type: "slideMarker",
+              props: { markerId },
+            } as Parameters<typeof changedEditor.updateBlock>[1]);
+          } catch {
+            // block may have been deleted by the user before the timeout fired
+          }
+        }, 0);
+        void apiPostMarker(lectureId, markerId, timestamp, triggerBlock.id);
+        return; // skip meta+save for this transient state; next onChange will save
+      }
+
+      // Detect slideMarker blocks deleted since last onChange → remove from API
+      const prevMarkers = flatBlocks(prevDocRef.current).filter((b) => b.type === "slideMarker");
+      const newMarkerIds = new Set(allNew.filter((b) => b.type === "slideMarker").map((b) => b.id));
+      for (const pm of prevMarkers) {
+        if (!newMarkerIds.has(pm.id)) {
+          const mid = pm.props?.["markerId"];
+          if (typeof mid === "string" && mid) void apiDeleteMarker(lectureId, mid);
+        }
+      }
+
+      // Normal path: update meta and schedule save
+      const newBlocks = newDoc as unknown as BlockLike[];
       const newMeta = updateMeta(
         prevBlocksRef.current,
         newBlocks,
@@ -114,6 +195,7 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
       );
       metaRef.current = newMeta;
       prevBlocksRef.current = newBlocks;
+      prevDocRef.current = newDoc;
 
       const doc: NotesDocument = {
         blocks: changedEditor.document as unknown[],
@@ -124,7 +206,7 @@ function EditorView({ initialDoc, lectureId, onBack }: EditorViewProps) {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => save(doc), 500);
     },
-    [save],
+    [save, lectureId],
   );
 
   if (error) {

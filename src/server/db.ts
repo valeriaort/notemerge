@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { Lecture, User } from "../shared/types.js";
+import type { Lecture, SlideMarker, User } from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -48,6 +48,13 @@ export function openDb(dbPath: string) {
       notes_data TEXT NOT NULL DEFAULT '{"blocks":[],"meta":{}}',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS slide_markers (
+      id TEXT PRIMARY KEY,
+      lecture_id TEXT NOT NULL REFERENCES lectures(id),
+      timestamp INTEGER NOT NULL,
+      block_id TEXT NOT NULL
     );
   `);
 
@@ -101,6 +108,53 @@ export function listLectures(db: Database.Database): Lecture[] {
     .prepare("SELECT * FROM lectures ORDER BY created_at DESC")
     .all() as DbRow[];
   return rows.map(rowToLecture);
+}
+
+type MarkerRow = {
+  id: string;
+  lecture_id: string;
+  timestamp: number;
+  block_id: string;
+};
+
+function rowToMarker(row: MarkerRow): SlideMarker {
+  return { id: row.id, lectureId: row.lecture_id, timestamp: row.timestamp, blockId: row.block_id };
+}
+
+export function createMarker(
+  db: Database.Database,
+  id: string,
+  lectureId: string,
+  timestamp: number,
+  blockId: string,
+): SlideMarker {
+  db.prepare(
+    "INSERT INTO slide_markers (id, lecture_id, timestamp, block_id) VALUES (?, ?, ?, ?)",
+  ).run(id, lectureId, timestamp, blockId);
+  return rowToMarker(
+    db.prepare("SELECT * FROM slide_markers WHERE id = ?").get(id) as MarkerRow,
+  );
+}
+
+export function listMarkers(
+  db: Database.Database,
+  lectureId: string,
+): SlideMarker[] {
+  const rows = db
+    .prepare("SELECT * FROM slide_markers WHERE lecture_id = ? ORDER BY timestamp ASC")
+    .all(lectureId) as MarkerRow[];
+  return rows.map(rowToMarker);
+}
+
+export function deleteMarker(
+  db: Database.Database,
+  id: string,
+  lectureId: string,
+): boolean {
+  const result = db
+    .prepare("DELETE FROM slide_markers WHERE id = ? AND lecture_id = ?")
+    .run(id, lectureId);
+  return result.changes > 0;
 }
 
 export function updateLectureNotes(
