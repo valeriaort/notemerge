@@ -7,6 +7,7 @@ import { writeFileSync } from "fs";
 import type Database from "better-sqlite3";
 import { getSubject, updateSubjectGlossary } from "../db.js";
 import { buildSubjectGlossary } from "../../shared/termRetention.js";
+import { extractTextFromPdf } from "../pdfExtraction.js";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -28,18 +29,12 @@ export function glossaryRoutes(db: Database.Database, dataDir: string): Router {
         return;
       }
 
-      let pdfText = "";
-      try {
-        const { PDFParse } = await import("pdf-parse");
-        const data = new Uint8Array(req.file.buffer);
-        const parser = new PDFParse({ data, verbosity: 0 });
-        const result = await parser.getText();
-        pdfText = result.text ?? "";
-        await parser.destroy();
-      } catch {
+      const extracted = await extractTextFromPdf(req.file.buffer);
+      if (!extracted.ok) {
         res.status(400).json({ error: "Failed to parse the PDF" });
         return;
       }
+      const pdfText = extracted.text;
 
       if (pdfText.trim().length < 20) {
         res.status(400).json({ error: "The PDF has no extractable text" });

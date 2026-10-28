@@ -36,6 +36,10 @@ export type ExtractionResult =
   | { ok: true; slides: ExtractedSlide[] }
   | { ok: false; error: string };
 
+export type TextExtractionResult =
+  | { ok: true; text: string }
+  | { ok: false; error: string };
+
 // Lines on more than this fraction of pages are treated as repeated (header/footer)
 const REPEAT_THRESHOLD = 0.5;
 
@@ -142,6 +146,41 @@ function parseBullets(lines: PageLine[], slideIndex: number): SlideBullet[] {
   }
 
   return bullets;
+}
+
+// Extract the plain text of a PDF (all pages, reading order).
+// Uses the same pdfjs engine as slide extraction so the app depends on a
+// single PDF library — mixing a second one (e.g. pdf-parse, which pins an
+// older pdfjs) corrupts the shared pdfjs worker and breaks both features.
+export async function extractTextFromPdf(buffer: Buffer): Promise<TextExtractionResult> {
+  const { pdfjs, standardFontsDir } = await getPdfjs();
+
+  let pdfDoc: Awaited<ReturnType<typeof pdfjs.getDocument>["promise"]>;
+  try {
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      standardFontDataUrl: `file://${standardFontsDir}`,
+    });
+    pdfDoc = await loadingTask.promise;
+  } catch {
+    return { ok: false, error: "Failed to parse PDF." };
+  }
+
+  const parts: string[] = [];
+  for (let p = 1; p <= pdfDoc.numPages; p++) {
+    const page = await pdfDoc.getPage(p);
+    const textContent: TextContent = await page.getTextContent() as TextContent;
+    const pageText = textContent.items
+      .filter(isTextItem)
+      .map((it) => it.str)
+      .join(" ");
+    parts.push(pageText);
+  }
+
+  return { ok: true, text: parts.join("\n") };
 }
 
 export async function extractSlidesFromPdf(buffer: Buffer): Promise<ExtractionResult> {
