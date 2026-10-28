@@ -78,6 +78,65 @@ const hooks = {
 };
 
 // ---------------------------------------------------------------------------
+// Usage-limit handling
+// ---------------------------------------------------------------------------
+// Sandcastle has no notion of Claude usage limits, so a limit hit surfaces as a
+// generic agent failure. We recognise limit-like errors by message, sleep, and
+// re-run the same step. Retries re-run on the same branch, so commits already
+// made are kept (resumeSession is not usable with maxIterations > 1).
+// The patterns are a best guess; widen them if a real limit slips through.
+
+const LIMIT_PATTERN =
+  /usage limit|rate.?limit|limit reached|quota|credit|\b429\b|overloaded|resets? (at|in)/i;
+const BACKOFF_MIN = [5, 10, 20, 30]; // minutes; last value repeats
+const MAX_SINGLE_WAIT_MS = 6 * 60 * 60 * 1000; // longer than this: stop and tell the user
+const MAX_TOTAL_WAIT_MS = 12 * 60 * 60 * 1000;
+
+let totalWaitedMs = 0;
+let limitAbort: string | undefined;
+
+const errorText = (e: unknown): string => {
+  if (e instanceof Error) return `${e.name}: ${e.message}\n${String((e as { cause?: unknown }).cause ?? "")}`;
+  return String(e);
+};
+
+// Claude Code reports "...usage limit reached|<epoch seconds>" when it knows the reset.
+const parseResetMs = (text: string): number | undefined => {
+  const m = text.match(/limit reached\|(\d{10})/i);
+  return m ? Number(m[1]) * 1000 : undefined;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function withLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    if (limitAbort) throw new Error(`skipped, run aborted: ${limitAbort}`);
+    try {
+      return await fn();
+    } catch (e) {
+      const text = errorText(e);
+      if (!LIMIT_PATTERN.test(text)) throw e;
+
+      const resetAt = parseResetMs(text);
+      const waitMs = resetAt
+        ? Math.max(resetAt - Date.now(), 0) + 60_000
+        : BACKOFF_MIN[Math.min(attempt, BACKOFF_MIN.length - 1)]! * 60_000;
+
+      if (waitMs > MAX_SINGLE_WAIT_MS || totalWaitedMs + waitMs > MAX_TOTAL_WAIT_MS) {
+        limitAbort = `${label}: usage limit needs ${Math.round(waitMs / 60_000)} min wait, over the cap`;
+        throw e;
+      }
+      totalWaitedMs += waitMs;
+      console.warn(
+        `  ⏸ ${label}: usage limit suspected (${text.split("\n")[0]!.slice(0, 160)}). ` +
+          `Waiting ${Math.round(waitMs / 60_000)} min, then retrying (attempt ${attempt + 1}).`,
+      );
+      await sleep(waitMs);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Issue graph
 // ---------------------------------------------------------------------------
 
@@ -186,7 +245,7 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
 
   const settled = await Promise.allSettled(
     batch.map((issue) =>
-      sandcastle.run({
+      withLimitRetry(`#${issue.number}`, () => sandcastle.run({
         hooks,
         sandbox: sandbox(`issue-${issue.number}`),
         branchStrategy: { type: "branch", branch: `sandcastle/issue-${issue.number}` },
@@ -199,9 +258,14 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
           ISSUE_TITLE: issue.title,
           BRANCH: `sandcastle/issue-${issue.number}`,
         },
-      }),
+      })),
     ),
   );
+
+  if (limitAbort) {
+    console.error(`\nStopping: ${limitAbort}. Re-run after the limit resets.`);
+    process.exit(2);
+  }
 
   const merged: Issue[] = [];
   settled.forEach((outcome, i) => {
@@ -219,7 +283,7 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
 
   if (merged.length === 0) continue;
 
-  await sandcastle.run({
+  await withLimitRetry("merger", () => sandcastle.run({
     hooks,
     sandbox: sandbox("merger"),
     name: "merger",
@@ -230,7 +294,7 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
       BRANCHES: merged.map((i) => `- sandcastle/issue-${i.number}`).join("\n"),
       ISSUES: merged.map((i) => `- ${i.number}: ${i.title}`).join("\n"),
     },
-  });
+  }));
 
   // Anything the merger left open must not be retried in a loop; also its
   // dependents stay blocked because blockers are only satisfied by CLOSED.
