@@ -62,6 +62,13 @@ export type ConflictQuestion = {
 export type CoverageAnswers = Record<string, { label: CoverageLabel; probability: number }>;
 export type ConflictAnswers = Record<string, { label: ConflictLabel; probability: number }>;
 
+export type SlideMarker = {
+  id: string;
+  lectureId: string;
+  timestamp: number;
+  blockId: string;
+};
+
 export type WritingOperation =
   | { type: "add_after"; blockId: string; text: string; sourceIds: string[] }
   | { type: "add_at_window"; windowId: string; text: string; sourceIds: string[] }
