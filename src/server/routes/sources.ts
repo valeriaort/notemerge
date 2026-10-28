@@ -12,6 +12,7 @@ import {
   ensureDefaultUser,
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
+import { extractSlidesFromPdf } from "../pdfExtraction.js";
 
 const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
 
@@ -58,10 +59,19 @@ export function sourcesRoutes(db: Database.Database): Router {
         return;
       }
 
-      // Save the PDF to the lecture's data directory
+      // Extract slide text from the PDF before saving
+      const extraction = await extractSlidesFromPdf(req.file.buffer);
+      if (!extraction.ok) {
+        res.status(400).json({ error: extraction.error });
+        return;
+      }
+
+      // Save the PDF and extracted slides to the lecture's data directory
       const { writeFileSync } = await import("fs");
       const presentationPath = path.join(lecture.dataDir, "presentation.pdf");
       writeFileSync(presentationPath, req.file.buffer);
+      const slidesPath = path.join(lecture.dataDir, "slides.json");
+      writeFileSync(slidesPath, JSON.stringify(extraction.slides));
 
       const sealed = sealLecture(db, lecture.id, subject.id, presentationPath);
       if (!sealed) {
@@ -69,7 +79,7 @@ export function sourcesRoutes(db: Database.Database): Router {
         return;
       }
 
-      res.json({ lecture: sealed, subject });
+      res.json({ lecture: sealed, subject, slides: extraction.slides });
     },
   );
 

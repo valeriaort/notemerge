@@ -2,6 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { Lecture, Subject } from "../../shared/types.js";
 import { strings } from "../../shared/strings.js";
 
+type ExtractedSlide = {
+  id: string;
+  title: string | null;
+  bullets: Array<{ id: string; text: string }>;
+};
+
 interface SourcesProps {
   lectureId: string;
   onSealed: () => void;
@@ -126,6 +132,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sealedSlides, setSealedSlides] = useState<ExtractedSlide[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -199,7 +206,8 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
         setError(body.error ?? "Upload failed");
         return;
       }
-      onSealed();
+      const body = await res.json() as { slides?: ExtractedSlide[] };
+      setSealedSlides(body.slides ?? []);
     } catch {
       setError("Upload failed. Please try again.");
     } finally {
@@ -225,7 +233,36 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
       </div>
 
       <div style={styles.body}>
-        <div style={styles.card}>
+        {sealedSlides !== null && (
+          <div style={styles.card} data-testid="slides-preview">
+            <p style={{ margin: 0, fontWeight: 600, color: "#16a34a" }}>
+              ✓ {sealedSlides.length} {strings.sources.slidesExtracted}
+            </p>
+            <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.85rem", color: "#444" }}>
+              {sealedSlides.slice(0, 5).map((slide) => (
+                <li key={slide.id}>
+                  <strong>{slide.id}</strong>
+                  {slide.title ? ` — ${slide.title}` : ""}
+                  {slide.bullets.length > 0
+                    ? ` (${slide.bullets.length} bullet${slide.bullets.length !== 1 ? "s" : ""})`
+                    : ""}
+                </li>
+              ))}
+              {sealedSlides.length > 5 && (
+                <li style={{ color: "#888" }}>…{sealedSlides.length - 5} more slides</li>
+              )}
+            </ul>
+            <button
+              style={{ ...styles.submitBtn, alignSelf: "flex-end" }}
+              onClick={onSealed}
+              data-testid="continue-after-seal"
+            >
+              {strings.sources.continueButton}
+            </button>
+          </div>
+        )}
+
+        {sealedSlides === null && <div style={styles.card}>
           {/* Subject picker */}
           <div>
             <div style={styles.fieldLabel}>{strings.sources.subjectLabel}</div>
@@ -307,7 +344,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
           >
             {submitting ? "Uploading…" : strings.sources.submitButton}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );

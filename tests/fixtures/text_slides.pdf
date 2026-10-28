@@ -1,0 +1,66 @@
+%PDF-1.4
+1 0 obj
+<</Type /Catalog /Pages 2 0 R>>
+endobj
+2 0 obj
+<</Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3>>
+endobj
+3 0 obj
+<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources <</Font <</F1 9 0 R /F2 10 0 R>>>>>>
+endobj
+4 0 obj
+<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources <</Font <</F1 9 0 R /F2 10 0 R>>>>>>
+endobj
+5 0 obj
+<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources <</Font <</F1 9 0 R /F2 10 0 R>>>>>>
+endobj
+6 0 obj
+<</Length 247>>
+stream
+BT /F1 24 Tf 50 720 Td (Slide Title One) Tj ET
+BT /F2 12 Tf 50 670 Td (Bullet content here.) Tj ET
+BT /F2 12 Tf 50 650 Td (Another bullet line.) Tj ET
+BT /F2 12 Tf 50 630 Td (Third bullet point.) Tj ET
+BT /F2 8 Tf 250 30 Td (Repeated Footer) Tj ET
+endstream
+endobj
+7 0 obj
+<</Length 201>>
+stream
+BT /F1 24 Tf 50 720 Td (Slide Title Two) Tj ET
+BT /F2 12 Tf 50 670 Td (Second slide content.) Tj ET
+BT /F2 12 Tf 50 650 Td (More slide content here.) Tj ET
+BT /F2 8 Tf 250 30 Td (Repeated Footer) Tj ET
+endstream
+endobj
+8 0 obj
+<</Length 94>>
+stream
+BT /F1 24 Tf 50 720 Td (Slide Title Three) Tj ET
+BT /F2 8 Tf 250 30 Td (Repeated Footer) Tj ET
+endstream
+endobj
+9 0 obj
+<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold>>
+endobj
+10 0 obj
+<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000056 00000 n 
+0000000123 00000 n 
+0000000254 00000 n 
+0000000385 00000 n 
+0000000516 00000 n 
+0000000812 00000 n 
+0000001062 00000 n 
+0000001204 00000 n 
+0000001277 00000 n 
+trailer
+<</Size 11 /Root 1 0 R>>
+startxref
+1346
+%%EOF
