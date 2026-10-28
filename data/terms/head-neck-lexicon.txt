@@ -1,0 +1,203 @@
+cóndilo
+pterigoides
+masetero
+temporal
+esternocleidomastoideo
+trapecio
+orbicular
+cigomático
+frontal
+parietal
+occipital
+esfenoides
+etmoides
+nasal
+mandíbula
+maxilar
+palatino
+lagrimal
+vómer
+cornete
+fascia
+ATM
+articulación temporomandibular
+disco articular
+ligamento
+cápsula articular
+fosa glenoídea
+cóndilo mandibular
+apófisis estiloides
+apófisis mastoides
+fosa pterigopalatina
+fosa infratemporal
+bóveda craneal
+base craneal
+seno paranasal
+seno maxilar
+seno frontal
+seno etmoidal
+seno esfenoidal
+órbita
+fosa nasal
+nasofaringe
+orofaringe
+hipofaringe
+laringe
+faringe
+paladar
+úvula
+amígdala
+lengua
+sublingual
+submandibular
+parótida
+glándula parótida
+conducto de Wharton
+conducto de Stensen
+esmalte
+dentina
+pulpa
+cemento
+periodonto
+ligamento periodontal
+alveolo
+encía
+corona
+raíz
+cuello dental
+foramen apical
+nervio facial
+nervio trigémino
+nervio glosofaríngeo
+nervio vago
+nervio hipogloso
+nervio accesorio
+arteria carótida
+vena yugular
+arteria temporal superficial
+arteria maxilar
+cráneo
+hueso hioides
+hueso temporal
+apófisis coronoides
+incisura mandibular
+ángulo mandibular
+sínfisis mandibular
+tubérculo articular
+cavidad glenoídea
+disco meniscal
+ligamento temporomandibular
+ligamento esfenomandibular
+ligamento estilomandibular
+músculo pterigoideo
+músculo masetero
+músculo temporal
+músculo digástrico
+músculo milohioideo
+músculo genihioideo
+músculo estilofaríngeo
+músculo constrictor
+músculo estilohioideo
+músculo omohioideo
+músculo tirohioideo
+músculo esternohioideo
+músculo esternotiroideo
+músculo escaleno
+nervio auriculotemporal
+nervio alveolar inferior
+nervio lingual
+nervio bucal
+nervio infraorbitario
+nervio mentoniano
+nervio maseterino
+arteria facial
+arteria lingual
+arteria palatina
+arteria alveolar
+arteria infraorbitaria
+arteria meníngea
+vena facial
+vena retromandibular
+conducto parotídeo
+conducto submandibular
+glándula sublingual
+glándula submaxilar
+glándula submandibular
+tónsila palatina
+tónsila faríngea
+tónsila lingual
+protuberancia occipital
+agujero magno
+apófisis basilar
+cóndilo occipital
+silla turca
+lámina cribosa
+hueso nasal
+proceso cigomático
+arco cigomático
+sutura coronal
+sutura sagital
+sutura lambdoidea
+sutura escamosa
+fontanela
+proceso mastoides
+meato auditivo externo
+proceso estiloides
+tímpano
+caja timpánica
+mastoides
+células mastoideas
+trompa de Eustaquio
+trompa faringotimpánica
+seno cavernoso
+seno sagital
+seno transverso
+seno sigmoideo
+arteria cerebral
+polígono de Willis
+arteria vertebral
+arteria basilar
+arteria oftálmica
+arteria cerebral anterior
+arteria cerebral media
+arteria cerebral posterior
+diente
+molar
+premolar
+incisivo
+canino
+corona dental
+raíz dental
+conducto radicular
+cámara pulpar
+cemento radicular
+dentina radicular
+esmalte coronario
+juntura amelocementaria
+foramen apical
+ápice radicular
+furca
+bifurcación
+trifurcación
+alveolo dental
+hueso alveolar
+proceso alveolar
+cresta alveolar
+tabla ósea
+lámina dura
+espacio del ligamento periodontal
+espacio periodontal
+surco gingival
+surco crevicular
+encía libre
+encía adherida
+encía insertada
+mucosa alveolar
+mucogingival
+unión amelocementaria
+cemento acelular
+cemento celular
+fibras de Sharpey
+fibras periodontales
+fibras gingivales
+fibras alveolares

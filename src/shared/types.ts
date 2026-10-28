@@ -31,6 +31,8 @@ export interface Subject {
   name: string;
   userId: string;
   createdAt: number;
+  glossaryTerms: string[];
+  guiaDocente: string | null;
 }
 
 export interface User {

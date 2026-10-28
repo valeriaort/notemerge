@@ -20,10 +20,19 @@ export type SubjectRow = {
   name: string;
   user_id: string;
   created_at: number;
+  glossary_terms: string | null;
+  guia_docente_path: string | null;
 };
 
 function rowToSubject(row: SubjectRow): Subject {
-  return { id: row.id, name: row.name, userId: row.user_id, createdAt: row.created_at };
+  return {
+    id: row.id,
+    name: row.name,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    glossaryTerms: row.glossary_terms ? (JSON.parse(row.glossary_terms) as string[]) : [],
+    guiaDocente: row.guia_docente_path ?? null,
+  };
 }
 
 function rowToLecture(row: DbRow): Lecture {
@@ -81,6 +90,8 @@ export function openDb(dbPath: string) {
   // Additive migrations — safe to run repeatedly
   try { db.exec("ALTER TABLE users ADD COLUMN last_used_subject_id TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN presentation_path TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE subjects ADD COLUMN glossary_terms TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE subjects ADD COLUMN guia_docente_path TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -228,6 +239,21 @@ export function getLastUsedSubject(db: Database.Database): Subject | null {
   if (!user?.last_used_subject_id) return null;
   const subject = getSubject(db, user.last_used_subject_id);
   return subject ?? null;
+}
+
+export function updateSubjectGlossary(
+  db: Database.Database,
+  subjectId: string,
+  terms: string[],
+  guiaPath: string,
+): Subject | undefined {
+  const result = db
+    .prepare(
+      "UPDATE subjects SET glossary_terms = ?, guia_docente_path = ? WHERE id = ?",
+    )
+    .run(JSON.stringify(terms), guiaPath, subjectId);
+  if (result.changes === 0) return undefined;
+  return getSubject(db, subjectId);
 }
 
 // Seal a lecture: set stage to "sealed", assign subject, store presentation path
