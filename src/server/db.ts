@@ -1,7 +1,29 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { AbbreviationPair, AudioChunk, AudioFile, Lecture, SlideMarker, Subject, User, WindowOverride } from "../shared/types.js";
+import type {
+  AbbreviationPair,
+  AudioChunk,
+  AudioFile,
+  Citation,
+  EditListEntry,
+  EditListEntryType,
+  Lecture,
+  MergedBlock,
+  MergedBlockOrigin,
+  MergedBlockReviewState,
+  MergeRun,
+  MergeRunState,
+  Operation,
+  OperationKind,
+  OperationStatus,
+  SlideMarker,
+  Subject,
+  User,
+  WindowOverride,
+  WindowResult,
+  WindowResultStatus,
+} from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -84,6 +106,76 @@ export function openDb(dbPath: string) {
       lecture_id TEXT NOT NULL REFERENCES lectures(id),
       timestamp INTEGER NOT NULL,
       block_id TEXT NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS merge_runs (
+      id TEXT PRIMARY KEY,
+      lecture_id TEXT NOT NULL UNIQUE REFERENCES lectures(id),
+      state TEXT NOT NULL DEFAULT 'pending',
+      failed_window_ids TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS window_results (
+      id TEXT PRIMARY KEY,
+      merge_run_id TEXT NOT NULL REFERENCES merge_runs(id),
+      window_id TEXT NOT NULL,
+      coverage_status TEXT NOT NULL DEFAULT 'pending',
+      coverage_attempts INTEGER NOT NULL DEFAULT 0,
+      coverage_last_error TEXT,
+      conflict_status TEXT NOT NULL DEFAULT 'done',
+      conflict_attempts INTEGER NOT NULL DEFAULT 0,
+      conflict_last_error TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS verdicts (
+      id TEXT PRIMARY KEY,
+      window_result_id TEXT NOT NULL REFERENCES window_results(id),
+      question_key TEXT NOT NULL,
+      chosen_label TEXT NOT NULL,
+      probability REAL NOT NULL,
+      confidence REAL,
+      effective_label TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS edit_list_entries (
+      id TEXT PRIMARY KEY,
+      merge_run_id TEXT NOT NULL REFERENCES merge_runs(id),
+      type TEXT NOT NULL,
+      window_id TEXT NOT NULL,
+      source_ids TEXT NOT NULL DEFAULT '[]',
+      note_id TEXT,
+      retrieved_note_ids TEXT NOT NULL DEFAULT '[]',
+      source_text TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS operations (
+      id TEXT PRIMARY KEY,
+      merge_run_id TEXT NOT NULL REFERENCES merge_runs(id),
+      entry_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      target TEXT NOT NULL,
+      text TEXT NOT NULL,
+      source_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'accepted',
+      drop_reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS merged_blocks (
+      id TEXT PRIMARY KEY,
+      merge_run_id TEXT NOT NULL REFERENCES merge_runs(id),
+      position INTEGER NOT NULL,
+      window_id TEXT,
+      origin TEXT NOT NULL,
+      note_id TEXT,
+      text TEXT NOT NULL,
+      original_text TEXT,
+      proposed_rewrite TEXT,
+      citations TEXT NOT NULL DEFAULT '[]',
+      model_placed INTEGER NOT NULL DEFAULT 1,
+      review_state TEXT
     );
   `);
 
@@ -382,6 +474,15 @@ export function saveWindowOverrides(
     .run(JSON.stringify(overrides), lectureId);
 }
 
+export function updateLectureStage(
+  db: Database.Database,
+  lectureId: string,
+  stage: string,
+): void {
+  const now = Date.now();
+  db.prepare("UPDATE lectures SET stage = ?, updated_at = ? WHERE id = ?").run(stage, now, lectureId);
+}
+
 // Seal a lecture: set stage to "sealed", assign subject, store optional presentation path
 export function sealLecture(
   db: Database.Database,
@@ -496,4 +597,293 @@ export function listAudioChunks(db: Database.Database, audioFileId: string): Aud
       .prepare("SELECT * FROM audio_chunks WHERE audio_file_id = ? ORDER BY chunk_index ASC")
       .all(audioFileId) as AudioChunkRow[]
   ).map(rowToAudioChunk);
+}
+
+// ── Merge helpers ────────────────────────────────────────────────────────────
+
+type MergeRunRow = {
+  id: string;
+  lecture_id: string;
+  state: string;
+  failed_window_ids: string;
+  created_at: number;
+};
+
+function rowToMergeRun(row: MergeRunRow): MergeRun {
+  return {
+    id: row.id,
+    lectureId: row.lecture_id,
+    state: row.state as MergeRunState,
+    failedWindowIds: JSON.parse(row.failed_window_ids) as string[],
+    createdAt: row.created_at,
+  };
+}
+
+export function createMergeRun(
+  db: Database.Database,
+  id: string,
+  lectureId: string,
+): MergeRun {
+  const now = Date.now();
+  db.prepare(
+    "INSERT INTO merge_runs (id, lecture_id, state, failed_window_ids, created_at) VALUES (?, ?, 'running', '[]', ?)",
+  ).run(id, lectureId, now);
+  return rowToMergeRun(
+    db.prepare("SELECT * FROM merge_runs WHERE id = ?").get(id) as MergeRunRow,
+  );
+}
+
+export function getMergeRunByLectureId(
+  db: Database.Database,
+  lectureId: string,
+): MergeRun | undefined {
+  const row = db
+    .prepare("SELECT * FROM merge_runs WHERE lecture_id = ?")
+    .get(lectureId) as MergeRunRow | undefined;
+  return row ? rowToMergeRun(row) : undefined;
+}
+
+export function updateMergeRunState(
+  db: Database.Database,
+  id: string,
+  state: MergeRunState,
+): void {
+  db.prepare("UPDATE merge_runs SET state = ? WHERE id = ?").run(state, id);
+}
+
+type WindowResultRow = {
+  id: string;
+  merge_run_id: string;
+  window_id: string;
+  coverage_status: string;
+  coverage_attempts: number;
+  coverage_last_error: string | null;
+  conflict_status: string;
+  conflict_attempts: number;
+  conflict_last_error: string | null;
+};
+
+function rowToWindowResult(row: WindowResultRow): WindowResult {
+  return {
+    id: row.id,
+    mergeRunId: row.merge_run_id,
+    windowId: row.window_id,
+    coverageStatus: row.coverage_status as WindowResultStatus,
+    coverageAttempts: row.coverage_attempts,
+    coverageLastError: row.coverage_last_error,
+    conflictStatus: row.conflict_status as WindowResultStatus,
+    conflictAttempts: row.conflict_attempts,
+    conflictLastError: row.conflict_last_error,
+  };
+}
+
+export function createWindowResult(
+  db: Database.Database,
+  id: string,
+  mergeRunId: string,
+  windowId: string,
+): WindowResult {
+  db.prepare(
+    `INSERT INTO window_results (id, merge_run_id, window_id, coverage_status, coverage_attempts, conflict_status, conflict_attempts)
+     VALUES (?, ?, ?, 'pending', 0, 'done', 0)`,
+  ).run(id, mergeRunId, windowId);
+  return rowToWindowResult(
+    db.prepare("SELECT * FROM window_results WHERE id = ?").get(id) as WindowResultRow,
+  );
+}
+
+export function updateWindowResultCoverage(
+  db: Database.Database,
+  id: string,
+  status: WindowResultStatus,
+  error?: string,
+): void {
+  db.prepare(
+    "UPDATE window_results SET coverage_status = ?, coverage_last_error = ?, coverage_attempts = coverage_attempts + 1 WHERE id = ?",
+  ).run(status, error ?? null, id);
+}
+
+export type VerdictInput = {
+  id: string;
+  questionKey: string;
+  chosenLabel: string;
+  probability: number;
+  confidence?: number;
+  effectiveLabel: string;
+};
+
+export function saveVerdicts(
+  db: Database.Database,
+  windowResultId: string,
+  verdicts: VerdictInput[],
+): void {
+  const stmt = db.prepare(
+    "INSERT INTO verdicts (id, window_result_id, question_key, chosen_label, probability, confidence, effective_label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const v of verdicts) {
+    stmt.run(v.id, windowResultId, v.questionKey, v.chosenLabel, v.probability, v.confidence ?? null, v.effectiveLabel);
+  }
+}
+
+type EditListEntryRow = {
+  id: string;
+  merge_run_id: string;
+  type: string;
+  window_id: string;
+  source_ids: string;
+  note_id: string | null;
+  retrieved_note_ids: string;
+  source_text: string;
+};
+
+function rowToEditListEntry(row: EditListEntryRow): EditListEntry {
+  return {
+    id: row.id,
+    mergeRunId: row.merge_run_id,
+    type: row.type as EditListEntryType,
+    windowId: row.window_id,
+    sourceIds: JSON.parse(row.source_ids) as string[],
+    noteId: row.note_id,
+    retrievedNoteIds: JSON.parse(row.retrieved_note_ids) as string[],
+    sourceText: row.source_text,
+  };
+}
+
+export function createEditListEntry(
+  db: Database.Database,
+  entry: Omit<EditListEntry, "retrievedNoteIds"> & { retrievedNoteIds?: string[] },
+): EditListEntry {
+  db.prepare(
+    `INSERT INTO edit_list_entries (id, merge_run_id, type, window_id, source_ids, note_id, retrieved_note_ids, source_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    entry.id,
+    entry.mergeRunId,
+    entry.type,
+    entry.windowId,
+    JSON.stringify(entry.sourceIds),
+    entry.noteId ?? null,
+    JSON.stringify(entry.retrievedNoteIds ?? []),
+    entry.sourceText,
+  );
+  return rowToEditListEntry(
+    db.prepare("SELECT * FROM edit_list_entries WHERE id = ?").get(entry.id) as EditListEntryRow,
+  );
+}
+
+export function listEditListEntries(
+  db: Database.Database,
+  mergeRunId: string,
+): EditListEntry[] {
+  const rows = db
+    .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+    .all(mergeRunId) as EditListEntryRow[];
+  return rows.map(rowToEditListEntry);
+}
+
+type OperationRow = {
+  id: string;
+  merge_run_id: string;
+  entry_id: string;
+  kind: string;
+  target: string;
+  text: string;
+  source_ids: string;
+  status: string;
+  drop_reason: string | null;
+};
+
+function rowToOperation(row: OperationRow): Operation {
+  return {
+    id: row.id,
+    mergeRunId: row.merge_run_id,
+    entryId: row.entry_id,
+    kind: row.kind as OperationKind,
+    target: row.target,
+    text: row.text,
+    sourceIds: JSON.parse(row.source_ids) as string[],
+    status: row.status as OperationStatus,
+    dropReason: row.drop_reason,
+  };
+}
+
+export function createOperation(
+  db: Database.Database,
+  op: Operation,
+): Operation {
+  db.prepare(
+    `INSERT INTO operations (id, merge_run_id, entry_id, kind, target, text, source_ids, status, drop_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(op.id, op.mergeRunId, op.entryId, op.kind, op.target, op.text, JSON.stringify(op.sourceIds), op.status, op.dropReason ?? null);
+  return rowToOperation(
+    db.prepare("SELECT * FROM operations WHERE id = ?").get(op.id) as OperationRow,
+  );
+}
+
+type MergedBlockRow = {
+  id: string;
+  merge_run_id: string;
+  position: number;
+  window_id: string | null;
+  origin: string;
+  note_id: string | null;
+  text: string;
+  original_text: string | null;
+  proposed_rewrite: string | null;
+  citations: string;
+  model_placed: number;
+  review_state: string | null;
+};
+
+function rowToMergedBlock(row: MergedBlockRow): MergedBlock {
+  return {
+    id: row.id,
+    mergeRunId: row.merge_run_id,
+    position: row.position,
+    windowId: row.window_id,
+    origin: row.origin as MergedBlockOrigin,
+    noteId: row.note_id,
+    text: row.text,
+    originalText: row.original_text,
+    proposedRewrite: row.proposed_rewrite,
+    citations: JSON.parse(row.citations) as Citation[],
+    modelPlaced: row.model_placed === 1,
+    reviewState: row.review_state as MergedBlockReviewState | null,
+  };
+}
+
+export function createMergedBlock(
+  db: Database.Database,
+  block: MergedBlock,
+): MergedBlock {
+  db.prepare(
+    `INSERT INTO merged_blocks (id, merge_run_id, position, window_id, origin, note_id, text, original_text, proposed_rewrite, citations, model_placed, review_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    block.id,
+    block.mergeRunId,
+    block.position,
+    block.windowId ?? null,
+    block.origin,
+    block.noteId ?? null,
+    block.text,
+    block.originalText ?? null,
+    block.proposedRewrite ?? null,
+    JSON.stringify(block.citations),
+    block.modelPlaced ? 1 : 0,
+    block.reviewState ?? null,
+  );
+  return rowToMergedBlock(
+    db.prepare("SELECT * FROM merged_blocks WHERE id = ?").get(block.id) as MergedBlockRow,
+  );
+}
+
+export function listMergedBlocks(
+  db: Database.Database,
+  mergeRunId: string,
+): MergedBlock[] {
+  const rows = db
+    .prepare("SELECT * FROM merged_blocks WHERE merge_run_id = ? ORDER BY position ASC")
+    .all(mergeRunId) as MergedBlockRow[];
+  return rows.map(rowToMergedBlock);
 }

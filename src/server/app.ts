@@ -11,6 +11,8 @@ import { audioSourcesRoutes } from "./routes/audio.js";
 import { abbreviationRoutes, abbreviationLectureRoutes } from "./routes/abbreviations.js";
 import { glossaryRoutes } from "./routes/glossary.js";
 import { windowRoutes } from "./routes/windows.js";
+import { mergeRoutes } from "./routes/merge.js";
+import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,6 +30,7 @@ export function createApp(
   app.use("/api/lectures", audioSourcesRoutes(db, dataDir));
   app.use("/api/lectures", abbreviationLectureRoutes(db));
   app.use("/api/lectures", windowRoutes(db));
+  app.use("/api/lectures", mergeRoutes(db, _providers, config));
   app.use("/api/subjects", subjectRoutes(db));
   app.use("/api/subjects", glossaryRoutes(db, dataDir));
   app.use("/api/abbreviations", abbreviationRoutes(db));

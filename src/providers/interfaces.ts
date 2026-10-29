@@ -25,7 +25,16 @@ export interface ClassifierProvider {
 export interface WritingModelProvider {
   generateOperations(input: {
     sealedNotes: Array<{ id: string; text: string }>;
-    editList: unknown[];
+    windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
+    editList: Array<{
+      id: string;
+      type: string;
+      windowId: string;
+      sourceIds: string[];
+      sourceText: string;
+      noteId?: string;
+      retrievedNoteIds?: string[];
+    }>;
   }): Promise<WritingOperation[]>;
 }
 

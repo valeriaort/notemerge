@@ -63,6 +63,21 @@ export const strings = {
     saveFailed: "Failed to save notes. Please try again.",
     loadFailed: "Failed to load lecture.",
   },
+  merge: {
+    startButton: "Run Merge",
+    running: "Running merge…",
+    done: "Merge complete",
+    alreadyMerged: "This lecture has already been merged.",
+    noSlides: "No slides found for this lecture.",
+    errors: {
+      mergeFailed: "Merge failed. Please try again.",
+    },
+  },
+  review: {
+    title: "Review",
+    additionLabel: "Addition",
+    noMergedNote: "No merged note yet.",
+  },
   glossary: {
     noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",
     guiaLabel: "Guía docente (optional)",

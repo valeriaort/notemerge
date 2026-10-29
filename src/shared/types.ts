@@ -133,3 +133,89 @@ export type AudioChunk = {
   startOffsetMs: number;
   durationMs: number;
 };
+
+export type MergeRunState = "pending" | "running" | "paused" | "haiku" | "done";
+
+export interface MergeRun {
+  id: string;
+  lectureId: string;
+  state: MergeRunState;
+  failedWindowIds: string[];
+  createdAt: number;
+}
+
+export type WindowResultStatus = "pending" | "done" | "failed";
+
+export interface WindowResult {
+  id: string;
+  mergeRunId: string;
+  windowId: string;
+  coverageStatus: WindowResultStatus;
+  coverageAttempts: number;
+  coverageLastError: string | null;
+  conflictStatus: WindowResultStatus;
+  conflictAttempts: number;
+  conflictLastError: string | null;
+}
+
+export interface Verdict {
+  id: string;
+  windowResultId: string;
+  questionKey: string;
+  chosenLabel: string;
+  probability: number;
+  confidence: number | null;
+  effectiveLabel: string;
+}
+
+export type EditListEntryType = "missing" | "partial" | "conflict";
+
+export interface EditListEntry {
+  id: string;
+  mergeRunId: string;
+  type: EditListEntryType;
+  windowId: string;
+  sourceIds: string[];
+  noteId: string | null;
+  retrievedNoteIds: string[];
+  sourceText: string;
+}
+
+export type OperationKind = "add_after" | "add_at_window" | "rewrite";
+export type OperationStatus = "accepted" | "dropped";
+
+export interface Operation {
+  id: string;
+  mergeRunId: string;
+  entryId: string;
+  kind: OperationKind;
+  target: string;
+  text: string;
+  sourceIds: string[];
+  status: OperationStatus;
+  dropReason: string | null;
+}
+
+export type MergedBlockOrigin = "student" | "addition" | "partial_fix" | "conflict" | "fallback";
+export type MergedBlockReviewState = "kept" | "reverted" | "unresolved" | "edited";
+
+export interface Citation {
+  sourceId: string;
+  kind: "slide" | "transcript";
+  text: string;
+}
+
+export interface MergedBlock {
+  id: string;
+  mergeRunId: string;
+  position: number;
+  windowId: string | null;
+  origin: MergedBlockOrigin;
+  noteId: string | null;
+  text: string;
+  originalText: string | null;
+  proposedRewrite: string | null;
+  citations: Citation[];
+  modelPlaced: boolean;
+  reviewState: MergedBlockReviewState | null;
+}

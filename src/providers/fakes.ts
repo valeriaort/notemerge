@@ -50,9 +50,52 @@ export class FakeClassifier implements ClassifierProvider {
 export class FakeWritingModel implements WritingModelProvider {
   async generateOperations(_input: {
     sealedNotes: Array<{ id: string; text: string }>;
+    windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
     editList: unknown[];
   }): Promise<WritingOperation[]> {
     return [];
+  }
+}
+
+export class ScriptedClassifier implements ClassifierProvider {
+  private coverageMap: CoverageAnswers = {};
+
+  addCoverageAnswers(answers: CoverageAnswers): void {
+    Object.assign(this.coverageMap, answers);
+  }
+
+  async classifyCoverage(
+    _state: string,
+    questions: CoverageQuestion[],
+  ): Promise<CoverageAnswers> {
+    const result: CoverageAnswers = {};
+    for (const q of questions) {
+      result[q.key] = this.coverageMap[q.key] ?? { label: "covered", probability: 0.99 };
+    }
+    return result;
+  }
+
+  async checkConflicts(
+    _state: string,
+    questions: ConflictQuestion[],
+  ): Promise<ConflictAnswers> {
+    const answers: ConflictAnswers = {};
+    for (const q of questions) {
+      answers[q.key] = { label: "supported", probability: 0.99 };
+    }
+    return answers;
+  }
+}
+
+export class ScriptedWritingModel implements WritingModelProvider {
+  private ops: WritingOperation[] = [];
+
+  setOperations(ops: WritingOperation[]): void {
+    this.ops = [...ops];
+  }
+
+  async generateOperations(_input: unknown): Promise<WritingOperation[]> {
+    return this.ops;
   }
 }
 
