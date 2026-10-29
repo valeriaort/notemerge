@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync } from "fs";
+import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { openDb } from "../../src/server/db.js";
@@ -6,10 +6,12 @@ import { createApp } from "../../src/server/app.js";
 import { createFakeProviders } from "../../src/providers/fakes.js";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
+import type Database from "better-sqlite3";
 
 export interface TestServer {
   url: string;
   dataDir: string;
+  db: Database.Database;
   close: () => void;
 }
 
@@ -27,6 +29,7 @@ export function startTestServer(): Promise<TestServer> {
       resolve({
         url,
         dataDir,
+        db,
         close: () => {
           server.close();
           db.close();

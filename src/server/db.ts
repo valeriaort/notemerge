@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { AbbreviationPair, Lecture, SlideMarker, Subject, User } from "../shared/types.js";
+import type { AbbreviationPair, Lecture, SlideMarker, Subject, User, WindowOverride } from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -110,6 +110,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE lectures ADD COLUMN presentation_path TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE subjects ADD COLUMN glossary_terms TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE subjects ADD COLUMN guia_docente_path TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE lectures ADD COLUMN window_overrides TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -336,6 +337,28 @@ export function addIgnoredToken(
 export function listIgnoredTokens(db: Database.Database, userId: string): ReadonlySet<string> {
   const rows = db.prepare("SELECT token FROM ignored_tokens WHERE user_id = ?").all(userId) as { token: string }[];
   return new Set(rows.map((r) => r.token));
+}
+
+// Window override helpers
+
+export function getWindowOverrides(
+  db: Database.Database,
+  lectureId: string,
+): WindowOverride[] | null {
+  const row = db
+    .prepare("SELECT window_overrides FROM lectures WHERE id = ?")
+    .get(lectureId) as { window_overrides: string | null } | undefined;
+  if (!row || row.window_overrides === null) return null;
+  return JSON.parse(row.window_overrides) as WindowOverride[];
+}
+
+export function saveWindowOverrides(
+  db: Database.Database,
+  lectureId: string,
+  overrides: WindowOverride[],
+): void {
+  db.prepare("UPDATE lectures SET window_overrides = ? WHERE id = ?")
+    .run(JSON.stringify(overrides), lectureId);
 }
 
 // Seal a lecture: set stage to "sealed", assign subject, store presentation path

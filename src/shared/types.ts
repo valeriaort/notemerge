@@ -106,3 +106,11 @@ export type SlideWindow = {
   mappedSlides: string[];
   blockIds: string[];
 };
+
+// Stored override entry (no blockIds — always recomputed from notes)
+export type WindowOverride = {
+  id: string;
+  startMs: number;
+  endMs: number;
+  mappedSlides: string[];
+};

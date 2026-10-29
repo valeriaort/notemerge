@@ -43,6 +43,12 @@ export const strings = {
   windows: {
     countDiffNotice: (windows: number, slides: number) =>
       `${windows} window${windows === 1 ? "" : "s"}, ${slides} slide${slides === 1 ? "" : "s"}`,
+    windowNotFound: "Window not found.",
+    invalidMappedSlides: "mappedSlides must be an array of slide ID strings.",
+    mappingLockedAfterMerge: "Window mapping cannot be changed after the merge has started.",
+    mergeRequiresTwoIds: "Provide exactly two window IDs to merge.",
+    windowsNotAdjacent: "Only adjacent windows can be merged.",
+    cannotDeleteOnlyWindow: "Cannot delete the only window.",
   },
   errors: {
     lectureNotFound: "Lecture not found.",
