@@ -57,6 +57,9 @@ export const strings = {
     tooManyFilesError: "At most two audio files are allowed per lecture.",
     durationTooLongError: "Total audio duration exceeds the maximum allowed (~2 hours).",
     chunkingFailed: (msg: string) => `Audio chunking failed: ${msg}`,
+    alignMarkerRequired: "A slide marker ID is required.",
+    alignOffsetInvalid: "audioOffsetMs must be a non-negative number.",
+    alignMarkerNotFound: "Slide marker not found for this lecture.",
   },
   errors: {
     lectureNotFound: "Lecture not found.",
