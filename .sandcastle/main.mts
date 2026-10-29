@@ -120,14 +120,60 @@ const parseResetMs = (text: string): number | undefined => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// --- Network outages --------------------------------------------------------
+// A dropped connection makes agent calls fail with ordinary-looking errors. We
+// recognise them, poll until Anthropic and GitHub answer again, then retry the
+// step on the same branch. Timings are env-overridable so the path can be tested.
+const NETWORK_PATTERN =
+  /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EPIPE|socket hang up|fetch failed|getaddrinfo|Could not resolve host|Unable to connect|Failed to connect|connection (error|reset|refused|timed out|closed)|network (error|is unreachable)|ERR_NETWORK/i;
+const NET_POLL_MS = Number(process.env.NM_NET_POLL_MS ?? 20_000);
+const NET_SETTLE_MS = Number(process.env.NM_NET_SETTLE_MS ?? 15_000);
+const NET_MAX_WAIT_MS = 3 * 60 * 60 * 1000; // per outage
+const NET_MAX_UP_RETRIES = 6; // network-looking errors while the network is up: likely not an outage
+let outageSeen = false; // set when a network problem was handled; enables a final retry pass
+
+async function networkUp(): Promise<boolean> {
+  const reach = (url: string) =>
+    fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5_000) }).then(() => true, () => false);
+  const [a, g] = await Promise.all([reach("https://api.anthropic.com"), reach("https://api.github.com")]);
+  return a && g;
+}
+
+// Resolves true once the network answers, false if it stayed down past the cap.
+async function waitForNetwork(label: string): Promise<boolean> {
+  if (await networkUp()) return true;
+  outageSeen = true;
+  console.warn(`  ⏸ ${label}: network is down. Polling every ${Math.round(NET_POLL_MS / 1000)}s (cap ${NET_MAX_WAIT_MS / 3_600_000}h).`);
+  const t0 = Date.now();
+  while (Date.now() - t0 < NET_MAX_WAIT_MS) {
+    await sleep(NET_POLL_MS);
+    if (await networkUp()) {
+      console.warn(`  ▶ ${label}: network is back after ${Math.round((Date.now() - t0) / 1000)}s.`);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function withLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  let netRetries = 0;
   for (let attempt = 0; ; attempt++) {
     if (limitAbort) throw new Error(`skipped, run aborted: ${limitAbort}`);
     try {
       return await fn();
     } catch (e) {
       const text = errorText(e);
-      if (!LIMIT_PATTERN.test(text)) throw e;
+      if (!LIMIT_PATTERN.test(text)) {
+        if (!NETWORK_PATTERN.test(text)) throw e;
+        const wasDown = !(await networkUp());
+        netRetries = wasDown ? 0 : netRetries + 1;
+        if (netRetries > NET_MAX_UP_RETRIES) throw e;
+        console.warn(`  ⏸ ${label}: network error (${text.split("\n")[0]!.slice(0, 120)}). Waiting for connectivity.`);
+        outageSeen = true;
+        if (!(await waitForNetwork(label))) throw e;
+        await sleep(NET_SETTLE_MS);
+        continue;
+      }
 
       const resetAt = parseResetMs(text);
       const waitMs = resetAt
@@ -160,15 +206,26 @@ type Issue = {
   blockedBy: number[];
 };
 
+// Synchronous gh call that rides out connectivity loss instead of crashing the run.
+function ghWithRetry(ghArgs: string[]): string {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      return execFileSync("gh", ghArgs, { encoding: "utf8" });
+    } catch (e) {
+      if (Date.now() - t0 > NET_MAX_WAIT_MS) throw e;
+      outageSeen = true;
+      console.warn(`  ⏸ gh ${ghArgs.slice(0, 2).join(" ")} failed (${errorText(e).split("\n")[0]!.slice(0, 120)}). Retrying in ${Math.round(NET_POLL_MS / 1000)}s.`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, NET_POLL_MS);
+    }
+  }
+}
+
 function loadIssues(): Issue[] {
-  const raw = execFileSync(
-    "gh",
-    [
-      "issue", "list", "--state", "all", "--limit", "200",
-      "--json", "number,title,state,body,labels",
-    ],
-    { encoding: "utf8" },
-  );
+  const raw = ghWithRetry([
+    "issue", "list", "--state", "all", "--limit", "200",
+    "--json", "number,title,state,body,labels",
+  ]);
   return JSON.parse(raw).map((i: any): Issue => {
     const line = /^Blocked by:\s*(.*)$/im.exec(i.body ?? "")?.[1] ?? "";
     return {
@@ -241,6 +298,7 @@ if (DRY_RUN) {
 }
 
 const skipped = new Set<number>(); // failed or produced no commits this session
+let retryPasses = 0;
 
 for (let wave = 1; wave <= MAX_WAVES; wave++) {
   const { ready, waiting } = classify(loadIssues(), skipped);
@@ -249,6 +307,13 @@ for (let wave = 1; wave <= MAX_WAVES; wave++) {
     for (const w of waiting)
       console.log(`  #${w.issue.number} waiting on ${w.on.map((n) => "#" + n).join(", ")}`);
     if (skipped.size) console.log(`  skipped this session: ${[...skipped].map((n) => "#" + n).join(", ")}`);
+    // Failures during an outage may be transient: give skipped issues one more pass.
+    if (skipped.size && outageSeen && retryPasses < 1) {
+      retryPasses++;
+      console.log("  A network outage was handled earlier; retrying skipped issues once.");
+      skipped.clear();
+      continue;
+    }
     break;
   }
 
