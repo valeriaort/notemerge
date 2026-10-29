@@ -153,12 +153,14 @@ export class ScriptedClassifier implements ClassifierProvider {
 
 export class ScriptedWritingModel implements WritingModelProvider {
   private ops: WritingOperation[] = [];
+  callCount = 0;
 
   setOperations(ops: WritingOperation[]): void {
     this.ops = [...ops];
   }
 
   async generateOperations(_input: unknown): Promise<WritingOperation[]> {
+    this.callCount++;
     return this.ops;
   }
 }

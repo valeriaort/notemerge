@@ -24,6 +24,7 @@ export interface Config {
   mergeWindowConcurrency: number;
   chunkTargetMs: number;
   retryDelayBaseMs?: number;
+  haikuTokenThreshold?: number;
 }
 
 function loadJson(filePath: string): Partial<Config> {
