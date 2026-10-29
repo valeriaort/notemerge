@@ -9,6 +9,7 @@ import {
   listMergedBlocks,
   getMergedBlock,
   updateMergedBlockReviewState,
+  updateMergedBlockText,
 } from "../db.js";
 import type { MergedBlockReviewState } from "../../shared/types.js";
 import { mergeLecture } from "../mergeLecture.js";
@@ -97,10 +98,21 @@ export function mergeRoutes(
       return;
     }
 
-    const { reviewState } = req.body as { reviewState?: unknown };
+    const { reviewState, text } = req.body as { reviewState?: unknown; text?: unknown };
+
+    if (reviewState === undefined && text === undefined) {
+      res.status(400).json({ error: "Provide reviewState or text." });
+      return;
+    }
+
     const VALID_STATES: MergedBlockReviewState[] = ["kept", "reverted", "unresolved", "edited"];
-    if (typeof reviewState !== "string" || !VALID_STATES.includes(reviewState as MergedBlockReviewState)) {
+    if (reviewState !== undefined && (typeof reviewState !== "string" || !VALID_STATES.includes(reviewState as MergedBlockReviewState))) {
       res.status(400).json({ error: "Invalid reviewState. Must be one of: kept, reverted, unresolved, edited." });
+      return;
+    }
+
+    if (text !== undefined && typeof text !== "string") {
+      res.status(400).json({ error: "text must be a string." });
       return;
     }
 
@@ -110,7 +122,25 @@ export function mergeRoutes(
       return;
     }
 
-    const updated = updateMergedBlockReviewState(db, req.params["blockId"]!, reviewState);
+    if (typeof reviewState === "string") {
+      updateMergedBlockReviewState(db, existing.id, reviewState);
+
+      // For conflict blocks: side-effect text changes on E and reopen
+      if (existing.origin === "conflict") {
+        if (reviewState === "edited" && existing.proposedRewrite !== null) {
+          updateMergedBlockText(db, existing.id, existing.proposedRewrite);
+        } else if (reviewState === "unresolved" && existing.originalText !== null) {
+          updateMergedBlockText(db, existing.id, existing.originalText);
+        }
+      }
+    }
+
+    // Explicit text update (post-E tweaks or editor changes)
+    if (typeof text === "string") {
+      updateMergedBlockText(db, existing.id, text);
+    }
+
+    const updated = getMergedBlock(db, existing.id);
     res.json({ block: updated });
   });
 

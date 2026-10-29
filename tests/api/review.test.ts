@@ -414,3 +414,166 @@ describe("PATCH /api/lectures/:id/audio/:fileId/recording-start — lock after r
     expect(res.status).toBe(409);
   });
 });
+
+// Helper to set up a lecture with one note block and a conflict
+async function setupConflictLecture(
+  url: string,
+  blockId: string,
+  noteText: string,
+  rewriteText: string,
+): Promise<{ lectureId: string; conflictBlock: MergedBlock }> {
+  const t = Date.now();
+  const lecture = await createLecture(url);
+  await putNotes(url, lecture.id, oneBlockNotes(blockId, noteText, t));
+  await sealWithPdf(url, lecture.id, SLIDE_PDF);
+
+  classifier.addConflictAnswers({
+    [`conflict:${blockId}`]: { label: "conflicts", probability: 0.97 },
+  });
+  writingModel.setOperations([
+    { type: "rewrite", blockId, text: rewriteText, sourceIds: ["S001-B01"] },
+  ]);
+
+  const { mergedNote } = await postMerge(url, lecture.id);
+  const conflictBlock = mergedNote.find((b) => b.origin === "conflict");
+  if (!conflictBlock) throw new Error("no conflict block produced");
+  return { lectureId: lecture.id, conflictBlock };
+}
+
+async function patchBlock(
+  url: string,
+  lectureId: string,
+  blockId: string,
+  body: Record<string, unknown>,
+): Promise<{ status: number; block?: MergedBlock; error?: string }> {
+  const res = await fetch(`${url}/api/lectures/${lectureId}/merged-note/${blockId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json() as { block?: MergedBlock; error?: string };
+  return { status: res.status, ...json };
+}
+
+describe("Conflict resolution — K, E, reopen", () => {
+  it("conflict block starts as unresolved with originalText and proposedRewrite", async () => {
+    const { conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    expect(conflictBlock.reviewState).toBe("unresolved");
+    expect(conflictBlock.originalText).toBe("student wrote this");
+    expect(conflictBlock.proposedRewrite).toBe("rewritten text");
+    expect(conflictBlock.text).toBe("student wrote this");
+  });
+
+  it("K (kept) resolves conflict and preserves original text", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    const { status, block } = await patchBlock(server.url, lectureId, conflictBlock.id, {
+      reviewState: "kept",
+    });
+    expect(status).toBe(200);
+    expect(block!.reviewState).toBe("kept");
+    expect(block!.text).toBe("student wrote this");
+  });
+
+  it("E (edited) resolves conflict and sets text to proposedRewrite", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    const { status, block } = await patchBlock(server.url, lectureId, conflictBlock.id, {
+      reviewState: "edited",
+    });
+    expect(status).toBe(200);
+    expect(block!.reviewState).toBe("edited");
+    expect(block!.text).toBe("rewritten text");
+  });
+
+  it("after E, text is editable and tweaks persist", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    await patchBlock(server.url, lectureId, conflictBlock.id, { reviewState: "edited" });
+
+    // Tweak the text
+    const { status, block } = await patchBlock(server.url, lectureId, conflictBlock.id, {
+      text: "tweaked rewrite",
+    });
+    expect(status).toBe(200);
+    expect(block!.text).toBe("tweaked rewrite");
+
+    // Confirm it persisted
+    const blocks = await getMergedNote(server.url, lectureId);
+    const fetched = blocks.find((b) => b.id === conflictBlock.id);
+    expect(fetched!.text).toBe("tweaked rewrite");
+  });
+
+  it("reopen restores unresolved state and original text", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+
+    // Resolve with E first
+    await patchBlock(server.url, lectureId, conflictBlock.id, { reviewState: "edited" });
+
+    // Reopen
+    const { status, block } = await patchBlock(server.url, lectureId, conflictBlock.id, {
+      reviewState: "unresolved",
+    });
+    expect(status).toBe(200);
+    expect(block!.reviewState).toBe("unresolved");
+    expect(block!.text).toBe("student wrote this");
+    expect(block!.originalText).toBe("student wrote this");
+    expect(block!.proposedRewrite).toBe("rewritten text");
+  });
+
+  it("reopen from K also restores original text", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+
+    await patchBlock(server.url, lectureId, conflictBlock.id, { reviewState: "kept" });
+    const { block } = await patchBlock(server.url, lectureId, conflictBlock.id, {
+      reviewState: "unresolved",
+    });
+    expect(block!.reviewState).toBe("unresolved");
+    expect(block!.text).toBe("student wrote this");
+  });
+
+  it("resolution state persists across restart", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    await patchBlock(server.url, lectureId, conflictBlock.id, { reviewState: "edited" });
+
+    const dbPath = server.dataDir + "/notemerge.db";
+    server.close();
+
+    const newDb = openDb(dbPath);
+    try {
+      const row = newDb
+        .prepare("SELECT review_state, text FROM merged_blocks WHERE id = ?")
+        .get(conflictBlock.id) as { review_state: string; text: string } | undefined;
+      expect(row?.review_state).toBe("edited");
+      expect(row?.text).toBe("rewritten text");
+    } finally {
+      newDb.close();
+    }
+  });
+
+  it("returns 400 when neither reviewState nor text is provided", async () => {
+    const { lectureId, conflictBlock } = await setupConflictLecture(
+      server.url, "B01", "student wrote this", "rewritten text",
+    );
+    const res = await fetch(
+      `${server.url}/api/lectures/${lectureId}/merged-note/${conflictBlock.id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+});

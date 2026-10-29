@@ -1137,6 +1137,15 @@ export function updateMergedBlockReviewState(
   return getMergedBlock(db, blockId);
 }
 
+export function updateMergedBlockText(
+  db: Database.Database,
+  blockId: string,
+  text: string,
+): MergedBlock | undefined {
+  db.prepare("UPDATE merged_blocks SET text = ? WHERE id = ?").run(text, blockId);
+  return getMergedBlock(db, blockId);
+}
+
 export function hasReviewDecision(
   db: Database.Database,
   lectureId: string,
