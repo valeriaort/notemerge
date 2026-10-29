@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import type Database from "better-sqlite3";
 import type { Config } from "./config.js";
 import type { Providers } from "../providers/interfaces.js";
+import { TranscriptionHttpError } from "../providers/interfaces.js";
 import type {
   AbbreviationPair,
   AudioFile,
@@ -23,6 +24,9 @@ import {
   updateAudioChunkTranscription,
   setAudioFileTranscriptionModel,
   createSentence,
+  countSentencesForAudioFile,
+  getAudioChunk,
+  getLectureTranscriptionModelOverride,
 } from "./db.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import { retainTerms } from "../shared/termRetention.js";
@@ -170,6 +174,47 @@ export function makeSentenceId(fileIndex: number, sentenceNumber: number): strin
   return `${filePrefix}-T${String(sentenceNumber).padStart(4, "0")}`;
 }
 
+export function makeChunkName(fileIndex: number, chunkIndex: number): string {
+  return `A${String(fileIndex).padStart(2, "0")}-C${String(chunkIndex).padStart(3, "0")}`;
+}
+
+// ── Retry with backoff ────────────────────────────────────────────────────────
+
+const MAX_RETRIES = 3;
+
+function isRetryable(err: unknown): boolean {
+  return (
+    err instanceof TranscriptionHttpError &&
+    (err.statusCode === 429 || err.statusCode >= 500)
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function transcribeWithRetry(
+  provider: Providers["speechToText"],
+  filePath: string,
+  prompt: string,
+  baseDelayMs: number,
+): Promise<import("../shared/types.js").TranscriptionResult> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await provider.transcribeChunk(filePath, prompt);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES && isRetryable(err)) {
+        await sleep(baseDelayMs * Math.pow(2, attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // ── Main transcription driver ─────────────────────────────────────────────────
 
 export async function transcribeLecture(
@@ -182,12 +227,23 @@ export async function transcribeLecture(
   if (!lecture) throw new Error("Lecture not found");
   if (lecture.stage !== "sealed") throw new Error("Lecture is not sealed");
 
-  // Idempotent: return existing run if already running/done
   const existing = getTranscriptRunByLectureId(db, lectureId);
-  if (existing) return { transcriptRun: existing };
 
-  const model = cfg.transcriptionModel;
-  const transcriptRun = createTranscriptRun(db, uuidv4(), lectureId, model);
+  // If already completed, return idempotently
+  if (existing?.state === "done") return { transcriptRun: existing };
+
+  const model = getLectureTranscriptionModelOverride(db, lectureId) ?? cfg.transcriptionModel;
+  const baseDelayMs = cfg.retryDelayBaseMs ?? 50;
+
+  let transcriptRun: import("../shared/types.js").TranscriptRun;
+  if (existing && (existing.state === "paused" || existing.state === "running")) {
+    // Resume: mark as running again
+    transcriptRun = existing;
+    updateTranscriptRunState(db, transcriptRun.id, "running");
+  } else {
+    // Fresh start
+    transcriptRun = createTranscriptRun(db, uuidv4(), lectureId, model);
+  }
 
   const notesDoc = JSON.parse(lecture.notesData) as NotesDocument;
   const abbrevPairs = listAbbreviationPairs(db);
@@ -201,9 +257,14 @@ export async function transcribeLecture(
     setAudioFileTranscriptionModel(db, audioFile.id, model);
     const chunks = listAudioChunks(db, audioFile.id);
 
-    let sentenceCounter = 1;
+    // Resume: sentence counter starts after already-created sentences
+    let sentenceCounter = countSentencesForAudioFile(db, audioFile.id) + 1;
 
     for (const chunk of chunks) {
+      // Skip chunks that are already done
+      const freshChunk = getAudioChunk(db, chunk.id);
+      if (freshChunk?.status === "done") continue;
+
       const chunkClockStartMs = audioFile.recordingStartMs + chunk.startOffsetMs;
       const chunkClockEndMs = chunkClockStartMs + chunk.durationMs;
 
@@ -218,7 +279,12 @@ export async function transcribeLecture(
 
       let rawResult: import("../shared/types.js").TranscriptionResult;
       try {
-        rawResult = await providers.speechToText.transcribeChunk(chunk.filePath, prompt);
+        rawResult = await transcribeWithRetry(
+          providers.speechToText,
+          chunk.filePath,
+          prompt,
+          baseDelayMs,
+        );
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         updateAudioChunkTranscription(db, chunk.id, "failed", null, errMsg);
@@ -253,8 +319,19 @@ export async function transcribeLecture(
     }
   }
 
-  if (failedChunkIds.length > 0) {
-    updateTranscriptRunState(db, transcriptRun.id, "paused", failedChunkIds);
+  // Collect any still-failed chunks (from this run + any that were already failed before)
+  const allFailed: string[] = [...failedChunkIds];
+  for (const audioFile of audioFiles) {
+    for (const chunk of listAudioChunks(db, audioFile.id)) {
+      const fresh = getAudioChunk(db, chunk.id);
+      if (fresh?.status === "failed" && !allFailed.includes(chunk.id)) {
+        allFailed.push(chunk.id);
+      }
+    }
+  }
+
+  if (allFailed.length > 0) {
+    updateTranscriptRunState(db, transcriptRun.id, "paused", allFailed);
   } else {
     updateTranscriptRunState(db, transcriptRun.id, "done");
     updateLectureStage(db, lectureId, "transcript-check");

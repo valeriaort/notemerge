@@ -263,6 +263,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN last_error TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN raw_response TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -820,6 +821,61 @@ export function listSentencesByLecture(db: Database.Database, lectureId: string)
   ).map(rowToSentence);
 }
 
+export function countSentencesForAudioFile(db: Database.Database, audioFileId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM sentences
+       WHERE chunk_id IN (SELECT id FROM audio_chunks WHERE audio_file_id = ?)`,
+    )
+    .get(audioFileId) as { cnt: number };
+  return row.cnt;
+}
+
+export function getAudioFileById(db: Database.Database, id: string): AudioFile | undefined {
+  const row = db.prepare("SELECT * FROM audio_files WHERE id = ?").get(id) as AudioFileRow | undefined;
+  return row ? rowToAudioFile(row) : undefined;
+}
+
+export function updateAudioFileRecordingStart(
+  db: Database.Database,
+  id: string,
+  recordingStartMs: number,
+): void {
+  db.prepare("UPDATE audio_files SET recording_start_ms = ? WHERE id = ?").run(recordingStartMs, id);
+}
+
+export function getAudioChunk(db: Database.Database, id: string): AudioChunk | undefined {
+  const row = db.prepare("SELECT * FROM audio_chunks WHERE id = ?").get(id) as AudioChunkRow | undefined;
+  return row ? rowToAudioChunk(row) : undefined;
+}
+
+/** Discard all transcript data for a lecture and reset its stage to 'sealed'. */
+export function discardTranscript(db: Database.Database, lectureId: string): void {
+  // Delete sentences for all chunks of this lecture
+  db.prepare(
+    `DELETE FROM sentences WHERE chunk_id IN (
+       SELECT ac.id FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE af.lecture_id = ?
+     )`,
+  ).run(lectureId);
+
+  // Reset chunk status
+  db.prepare(
+    `UPDATE audio_chunks SET status = 'pending', attempts = 0, last_error = NULL, raw_response = NULL
+     WHERE audio_file_id IN (SELECT id FROM audio_files WHERE lecture_id = ?)`,
+  ).run(lectureId);
+
+  // Reset audio file transcription model
+  db.prepare("UPDATE audio_files SET transcription_model = NULL WHERE lecture_id = ?").run(lectureId);
+
+  // Delete transcript run
+  db.prepare("DELETE FROM transcript_runs WHERE lecture_id = ?").run(lectureId);
+
+  // Reset lecture stage to sealed
+  updateLectureStage(db, lectureId, "sealed");
+}
+
 // ── Merge helpers ────────────────────────────────────────────────────────────
 
 type MergeRunRow = {
@@ -1118,4 +1174,45 @@ export function listMergedBlocks(
     .prepare("SELECT * FROM merged_blocks WHERE merge_run_id = ? ORDER BY position ASC")
     .all(mergeRunId) as MergedBlockRow[];
   return rows.map(rowToMergedBlock);
+}
+
+// ── Transcription model override ─────────────────────────────────────────────
+
+export function setLectureTranscriptionModelOverride(
+  db: Database.Database,
+  lectureId: string,
+  model: string | null,
+): void {
+  db.prepare("UPDATE lectures SET transcription_model_override = ? WHERE id = ?").run(model, lectureId);
+}
+
+export function getLectureTranscriptionModelOverride(
+  db: Database.Database,
+  lectureId: string,
+): string | null {
+  const row = db
+    .prepare("SELECT transcription_model_override FROM lectures WHERE id = ?")
+    .get(lectureId) as { transcription_model_override: string | null } | undefined;
+  return row?.transcription_model_override ?? null;
+}
+
+export function listFailedChunksWithDetails(
+  db: Database.Database,
+  lectureId: string,
+): Array<{ id: string; chunkName: string; lastError: string | null }> {
+  type Row = { id: string; chunk_index: number; file_index: number; last_error: string | null };
+  const rows = db
+    .prepare(
+      `SELECT ac.id, ac.chunk_index, af.file_index, ac.last_error
+       FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE af.lecture_id = ? AND ac.status = 'failed'
+       ORDER BY af.file_index ASC, ac.chunk_index ASC`,
+    )
+    .all(lectureId) as Row[];
+  return rows.map((r) => ({
+    id: r.id,
+    chunkName: `A${String(r.file_index).padStart(2, "0")}-C${String(r.chunk_index).padStart(3, "0")}`,
+    lastError: r.last_error,
+  }));
 }

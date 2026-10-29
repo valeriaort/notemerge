@@ -10,6 +10,11 @@ import {
   listAudioFiles,
   getWindowOverrides,
   listMarkers,
+  discardTranscript,
+  setLectureTranscriptionModelOverride,
+  listFailedChunksWithDetails,
+  getAudioFileById,
+  updateAudioFileRecordingStart,
 } from "../db.js";
 import { transcribeLecture } from "../transcribeLecture.js";
 import { computeWindows } from "../../shared/slideWindows.js";
@@ -60,7 +65,75 @@ export function transcriptionRoutes(
       res.status(404).json({ error: "No transcript run found" });
       return;
     }
-    res.json({ transcriptRun });
+    const failedChunks =
+      transcriptRun.state === "paused"
+        ? listFailedChunksWithDetails(db, lecture.id)
+        : [];
+    res.json({ transcriptRun, failedChunks });
+  });
+
+  // PATCH /:id/transcription-model — change transcription model (with warning/discard)
+  router.patch("/:id/transcription-model", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["id"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+    if (lecture.stage === "review" || lecture.stage === "exported") {
+      res.status(409).json({ error: strings.transcription.lockedAfterReview });
+      return;
+    }
+    const body = req.body as { model?: unknown; confirm?: unknown };
+    if (!body.model || typeof body.model !== "string") {
+      res.status(400).json({ error: "model is required and must be a string" });
+      return;
+    }
+    const model = body.model;
+    const confirm = body.confirm === true;
+    const existingRun = getTranscriptRunByLectureId(db, lecture.id);
+    if (existingRun && !confirm) {
+      res.json({ warning: strings.transcription.rerunWarning });
+      return;
+    }
+    if (existingRun && confirm) {
+      discardTranscript(db, lecture.id);
+    }
+    setLectureTranscriptionModelOverride(db, lecture.id, model);
+    res.json({ ok: true });
+  });
+
+  // PATCH /:id/audio-files/:audioFileId/recording-start — change recording start (with warning/discard)
+  router.patch("/:id/audio-files/:audioFileId/recording-start", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["id"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+    if (lecture.stage === "review" || lecture.stage === "exported") {
+      res.status(409).json({ error: strings.transcription.lockedAfterReview });
+      return;
+    }
+    const audioFile = getAudioFileById(db, req.params["audioFileId"]!);
+    if (!audioFile || audioFile.lectureId !== lecture.id) {
+      res.status(404).json({ error: "Audio file not found" });
+      return;
+    }
+    const body = req.body as { recordingStartMs?: unknown; confirm?: unknown };
+    if (typeof body.recordingStartMs !== "number") {
+      res.status(400).json({ error: "recordingStartMs must be a number" });
+      return;
+    }
+    const confirm = body.confirm === true;
+    const existingRun = getTranscriptRunByLectureId(db, lecture.id);
+    if (existingRun && !confirm) {
+      res.json({ warning: strings.transcription.rerunWarning });
+      return;
+    }
+    if (existingRun && confirm) {
+      discardTranscript(db, lecture.id);
+    }
+    updateAudioFileRecordingStart(db, audioFile.id, body.recordingStartMs as number);
+    res.json({ ok: true });
   });
 
   // GET /:id/sentences — sentences with window assignment

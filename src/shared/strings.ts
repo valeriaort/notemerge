@@ -82,6 +82,12 @@ export const strings = {
     partialFixLabel: "Partial fix",
     noMergedNote: "No merged note yet.",
   },
+  transcription: {
+    lockedAfterReview: "Transcript settings cannot be changed after review has begun.",
+    noTranscriptToDiscard: "No transcript to discard.",
+    chunkFailed: (chunkName: string, error: string) => `Chunk ${chunkName} failed: ${error}`,
+    rerunWarning: "Changing this setting will discard the existing transcript and any corrections. Pass confirm: true to proceed.",
+  },
   glossary: {
     noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",
     guiaLabel: "Guía docente (optional)",

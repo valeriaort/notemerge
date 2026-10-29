@@ -5,6 +5,7 @@ import type {
   NotionProvider,
   Providers,
 } from "./interfaces.js";
+import { TranscriptionHttpError } from "./interfaces.js";
 import type {
   TranscriptionResult,
   WhisperSegment,
@@ -29,6 +30,14 @@ export class ScriptedSpeechToText implements SpeechToTextProvider {
   private defaultSegments: WhisperSegment[] = [];
   public capturedPrompts: Array<{ chunkPath: string; prompt: string }> = [];
 
+  // Global fail-first-N-calls support
+  private failFirstNCalls = 0;
+  private failStatusCode = 429;
+  private callsMade = 0;
+
+  // Per-path fail support
+  private failsByPath: Map<string, { remaining: number; statusCode: number }> = new Map();
+
   setSegments(chunkPath: string, segments: WhisperSegment[]): void {
     this.segmentsByPath.set(chunkPath, segments);
   }
@@ -37,11 +46,35 @@ export class ScriptedSpeechToText implements SpeechToTextProvider {
     this.defaultSegments = segments;
   }
 
+  /** Fail the first `count` transcription calls with the given HTTP status code. */
+  setFailCount(count: number, statusCode: number = 429): void {
+    this.failFirstNCalls = count;
+    this.failStatusCode = statusCode;
+    this.callsMade = 0;
+  }
+
+  /** Fail `count` calls for a specific chunk path with the given HTTP status code. */
+  setChunkFailCount(chunkPath: string, count: number, statusCode: number = 429): void {
+    this.failsByPath.set(chunkPath, { remaining: count, statusCode });
+  }
+
   async transcribeChunk(
     chunkPath: string,
     prompt: string,
   ): Promise<TranscriptionResult> {
     this.capturedPrompts.push({ chunkPath, prompt });
+
+    // Per-path failures take priority
+    const perPath = this.failsByPath.get(chunkPath);
+    if (perPath && perPath.remaining > 0) {
+      perPath.remaining--;
+      throw new TranscriptionHttpError(perPath.statusCode, `HTTP ${perPath.statusCode}`);
+    }
+
+    this.callsMade++;
+    if (this.callsMade <= this.failFirstNCalls) {
+      throw new TranscriptionHttpError(this.failStatusCode, `HTTP ${this.failStatusCode}`);
+    }
     const segments = this.segmentsByPath.get(chunkPath) ?? this.defaultSegments;
     return { segments };
   }
