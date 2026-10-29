@@ -4,12 +4,14 @@ import { v4 as uuidv4 } from "uuid";
 import type Database from "better-sqlite3";
 import type { Config } from "./config.js";
 import type { Providers } from "../providers/interfaces.js";
+import { ClassifierRetryableError } from "../providers/interfaces.js";
 import type {
   Citation,
   MergeRun,
   MergedBlock,
   NotesDocument,
   SlideWindow,
+  WindowResult,
   WritingOperation,
 } from "../shared/types.js";
 import {
@@ -20,6 +22,8 @@ import {
   createWindowResult,
   getLecture,
   getMergeRunByLectureId,
+  getWindowResultsByMergeRunId,
+  getWindowResultByWindowId,
   listAbbreviationPairs,
   listEditListEntries,
   listMarkers,
@@ -32,6 +36,30 @@ import {
 import { computeWindows } from "../shared/slideWindows.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import type { ExtractedSlide, SlideBullet } from "./pdfExtraction.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryClassifierCall<T>(
+  fn: () => Promise<T>,
+  maxAttempts: number,
+  baseDelayMs: number,
+): Promise<T> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof ClassifierRetryableError && attempt < maxAttempts - 1) {
+        const delay = err.retryAfterMs > 0 ? err.retryAfterMs : baseDelayMs * 2 ** attempt;
+        await sleep(delay);
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error("unreachable");
+}
 
 function blockText(block: unknown): string {
   const b = block as { content?: unknown; children?: unknown[] };
@@ -68,16 +96,13 @@ function findWindowForBlock(
 }
 
 // Find insertion position after last student block in a window
-// Returns the index (in mergedList) after which to insert, or -1 to insert at end
 function insertionPositionForWindow(
   windowId: string,
   mergedList: Array<{ origin: string; windowId: string | null; originalPos: number }>,
   windows: SlideWindow[],
 ): number {
-  // Find the last student block that belongs to this window or earlier
   const winIdx = windows.findIndex((w) => w.id === windowId);
 
-  // Find last student block in this window
   let lastIdx = -1;
   for (let i = 0; i < mergedList.length; i++) {
     const item = mergedList[i]!;
@@ -88,7 +113,6 @@ function insertionPositionForWindow(
 
   if (lastIdx !== -1) return lastIdx;
 
-  // No student blocks in this window — find last student block in previous windows
   for (let wi = winIdx - 1; wi >= 0; wi--) {
     const prevWindowId = windows[wi]!.id;
     for (let i = mergedList.length - 1; i >= 0; i--) {
@@ -116,248 +140,19 @@ type MergedListItem = {
   originalPos: number;
 };
 
-export async function mergeLecture(
+async function runHaikuAndBuildNote(
   db: Database.Database,
+  mergeRun: MergeRun,
   lectureId: string,
+  windows: SlideWindow[],
+  slideMap: Map<string, ExtractedSlide>,
+  notesData: NotesDocument,
   providers: Providers,
-  config: Config,
-): Promise<MergeRun> {
-  const lecture = getLecture(db, lectureId);
-  if (!lecture) throw new Error("Lecture not found");
-
-  const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
-  if (!SEALED_STAGES.has(lecture.stage)) {
-    throw new Error("Lecture is not sealed");
-  }
-
-  if (getMergeRunByLectureId(db, lectureId)) {
-    throw new Error("ALREADY_MERGED");
-  }
-
-  // Load slides
-  const slidesPath = path.join(lecture.dataDir, "slides.json");
-  if (!existsSync(slidesPath)) {
-    throw new Error("No slides found for this lecture");
-  }
-  const slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
-  const slideMap = new Map<string, ExtractedSlide>(slides.map((s) => [s.id, s]));
-
-  // Compute windows
-  const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const markers = listMarkers(db, lectureId);
-  const windows = computeWindows(markers, notesData, slides.length);
-
-  // Load abbreviation pairs for expansion
-  const abbrevPairs = listAbbreviationPairs(db);
-
-  // Create merge run
-  const mergeRun = createMergeRun(db, uuidv4(), lectureId);
-
-  const contextMarginMs = config.contextMarginMs ?? 60000;
-  const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
-  const concurrency = config.mergeWindowConcurrency ?? 4;
-
-  // Process windows in parallel with bounded concurrency
-  const allBlocks = (notesData.blocks as unknown[]);
-
-  async function processWindow(window: SlideWindow): Promise<void> {
-    // Find bullets for this window from mapped slides
-    const bullets: SlideBullet[] = [];
-    for (const slideId of window.mappedSlides) {
-      const slide = slideMap.get(slideId);
-      if (slide) {
-        bullets.push(...slide.bullets);
-      }
-    }
-
-    if (bullets.length === 0) return; // No bullets to classify
-
-    // Retrieved notes: blocks with firstEditTime in [startMs - margin, endMs + margin]
-    const marginStart = window.startMs - contextMarginMs;
-    const marginEnd = window.endMs + contextMarginMs;
-
-    const retrievedBlocks: Array<{ id: string; text: string }> = [];
-    const inWindowBlocks: Array<{ id: string; text: string }> = [];
-    for (const block of allBlocks) {
-      const bid = blockId(block);
-      const meta = notesData.meta[bid];
-      if (!meta?.firstEditTime) continue;
-      const rawText = blockText(block);
-      if (!rawText) continue;
-      const expanded = expandAbbreviations(rawText, abbrevPairs);
-
-      if (meta.firstEditTime >= marginStart && meta.firstEditTime <= marginEnd) {
-        retrievedBlocks.push({ id: bid, text: expanded });
-      }
-
-      // In-window blocks (strictly inside window) for conflict check
-      if (meta.firstEditTime >= window.startMs && meta.firstEditTime < window.endMs) {
-        inWindowBlocks.push({ id: bid, text: expanded });
-      }
-    }
-
-    const coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
-
-    // Build coverage questions
-    const questions = bullets.map((b) => ({
-      key: `coverage:${b.id}`,
-      sourceId: b.id,
-      text: b.text,
-    }));
-
-    const windowResult = createWindowResult(db, uuidv4(), mergeRun.id, window.id);
-
-    // Coverage check
-    try {
-      const answers = await providers.classifier.classifyCoverage(coverageState, questions);
-
-      // Save verdicts
-      const verdictInputs = questions.map((q) => {
-        const answer = answers[q.key] ?? { label: "missing" as const, probability: 0.0 };
-        let effectiveLabel = answer.label as string;
-        // Apply noise threshold: noise below threshold becomes missing
-        if (answer.label === "noise" && answer.probability < noiseThreshold) {
-          effectiveLabel = "missing";
-        }
-        return {
-          id: uuidv4(),
-          questionKey: q.key,
-          chosenLabel: answer.label,
-          probability: answer.probability,
-          effectiveLabel,
-        };
-      });
-
-      saveVerdicts(db, windowResult.id, verdictInputs);
-      updateWindowResultCoverage(db, windowResult.id, "done");
-
-      // Create edit list entries for missing and partially_covered items
-      for (let i = 0; i < verdictInputs.length; i++) {
-        const v = verdictInputs[i]!;
-        const bullet = bullets[i]!;
-        if (v.effectiveLabel === "missing") {
-          createEditListEntry(db, {
-            id: uuidv4(),
-            mergeRunId: mergeRun.id,
-            type: "missing",
-            windowId: window.id,
-            sourceIds: [bullet.id],
-            noteId: null,
-            retrievedNoteIds: [],
-            sourceText: bullet.text,
-          });
-        } else if (v.effectiveLabel === "partially_covered") {
-          createEditListEntry(db, {
-            id: uuidv4(),
-            mergeRunId: mergeRun.id,
-            type: "partial",
-            windowId: window.id,
-            sourceIds: [bullet.id],
-            noteId: null,
-            retrievedNoteIds: retrievedBlocks.map((b) => b.id),
-            sourceText: bullet.text,
-          });
-        }
-      }
-    } catch (err) {
-      updateWindowResultCoverage(
-        db,
-        windowResult.id,
-        "failed",
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-
-    // Conflict check: one question per in-window note block against the pool
-    if (inWindowBlocks.length === 0) {
-      updateWindowResultConflict(db, windowResult.id, "done");
-      return;
-    }
-
-    const poolState = "Pool:\n" + bullets.map((b) => `${b.id}: ${b.text}`).join("\n");
-    const conflictQuestions = inWindowBlocks.map((b) => ({
-      key: `conflict:${b.id}`,
-      noteBlockId: b.id,
-      text: b.text,
-    }));
-
-    try {
-      const conflictAnswers = await providers.classifier.checkConflicts(
-        poolState,
-        conflictQuestions,
-      );
-
-      const conflictVerdictInputs = conflictQuestions.map((q) => {
-        const answer = conflictAnswers[q.key] ?? {
-          label: "supported" as const,
-          probability: 0.99,
-        };
-        return {
-          id: uuidv4(),
-          questionKey: q.key,
-          chosenLabel: answer.label,
-          probability: answer.probability,
-          effectiveLabel: answer.label,
-        };
-      });
-
-      saveVerdicts(db, windowResult.id, conflictVerdictInputs);
-      updateWindowResultConflict(db, windowResult.id, "done");
-
-      // Create edit list entries for conflicting blocks
-      const allSourceIds = bullets.map((b) => b.id);
-      for (let i = 0; i < conflictVerdictInputs.length; i++) {
-        const v = conflictVerdictInputs[i]!;
-        if (v.effectiveLabel === "conflicts") {
-          const block = inWindowBlocks[i]!;
-          createEditListEntry(db, {
-            id: uuidv4(),
-            mergeRunId: mergeRun.id,
-            type: "conflict",
-            windowId: window.id,
-            sourceIds: allSourceIds,
-            noteId: block.id,
-            retrievedNoteIds: [],
-            sourceText: block.text,
-          });
-        }
-      }
-    } catch (err) {
-      updateWindowResultConflict(
-        db,
-        windowResult.id,
-        "failed",
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
-
-  // Process windows with bounded concurrency
-  const queue = [...windows];
-  const running: Promise<void>[] = [];
-
-  async function drainQueue(): Promise<void> {
-    while (queue.length > 0 || running.length > 0) {
-      while (running.length < concurrency && queue.length > 0) {
-        const win = queue.shift()!;
-        const p = processWindow(win).then(() => {
-          running.splice(running.indexOf(p), 1);
-        });
-        running.push(p);
-      }
-      if (running.length > 0) await Promise.race(running);
-    }
-  }
-
-  await drainQueue();
-
-  updateMergeRunState(db, mergeRun.id, "haiku");
-
-  // Haiku pass
+): Promise<void> {
+  const allBlocks = notesData.blocks as unknown[];
   const editList = listEditListEntries(db, mergeRun.id);
 
-  // Build all blocks with IDs and text for Haiku
-  const sealedNotes = (allBlocks as unknown[]).map((b) => ({
+  const sealedNotes = allBlocks.map((b) => ({
     id: blockId(b),
     text: blockText(b),
   }));
@@ -392,8 +187,6 @@ export async function mergeLecture(
   const validWindowIds = new Set(windows.map((w) => w.id));
   const entryById = new Map(editList.map((e) => [e.id, e]));
   const validSourceIds = new Set(editList.flatMap((e) => e.sourceIds));
-
-  // Track which entries get answered (for fallback detection)
   const answeredEntries = new Set<string>();
 
   for (const op of rawOps) {
@@ -414,11 +207,9 @@ export async function mergeLecture(
       }
     }
 
-    // Find which entry this operation answers
     let entryId: string | null = null;
     for (const [eid, entry] of entryById) {
       if (op.type === "rewrite") {
-        // Rewrite ops match conflict entries by noteId and sourceIds overlap
         if (
           entry.type === "conflict" &&
           entry.noteId === op.blockId &&
@@ -430,7 +221,6 @@ export async function mergeLecture(
           }
         }
       } else {
-        // Add ops match by sourceIds overlap
         if (op.sourceIds.some((sid) => entry.sourceIds.includes(sid))) {
           if (!answeredEntries.has(eid)) {
             entryId = eid;
@@ -470,7 +260,6 @@ export async function mergeLecture(
   }
 
   // Build merged note
-  // Start with student blocks in document order
   const mergedList: MergedListItem[] = [];
 
   for (let i = 0; i < allBlocks.length; i++) {
@@ -496,7 +285,7 @@ export async function mergeLecture(
     });
   }
 
-  // For each accepted rewrite op, mark the student block as a conflict block
+  // Apply rewrite ops
   for (const raw of rawOps) {
     if (raw.type !== "rewrite") continue;
     if (!validBlockIds.has(raw.blockId)) continue;
@@ -509,7 +298,6 @@ export async function mergeLecture(
     }
     if (!hasValidSources) continue;
 
-    // Only process if the corresponding conflict entry was answered
     const conflictEntry = editList.find(
       (e) => e.type === "conflict" && e.noteId === raw.blockId,
     );
@@ -522,7 +310,6 @@ export async function mergeLecture(
 
     const item = mergedList[targetIdx]!;
 
-    // Build citations using slideMap for slide bullet text
     const citations: Citation[] = raw.sourceIds.map((sid) => {
       const kind: "slide" | "transcript" = sid.startsWith("S") ? "slide" : "transcript";
       let text = "";
@@ -547,7 +334,7 @@ export async function mergeLecture(
     };
   }
 
-  // For each accepted addition op, insert new blocks
+  // Apply addition ops
   const insertions: Array<{
     afterStudentNoteId: string | null;
     afterWindowId: string | null;
@@ -557,7 +344,6 @@ export async function mergeLecture(
   for (const raw of rawOps) {
     if (raw.type !== "add_after" && raw.type !== "add_at_window") continue;
 
-    // Check if this was accepted (not dropped)
     const opTarget = raw.type === "add_after" ? raw.blockId : raw.windowId;
     const isValidTarget =
       raw.type === "add_after" ? validBlockIds.has(opTarget) : validWindowIds.has(opTarget);
@@ -578,16 +364,12 @@ export async function mergeLecture(
     }
     if (dropReason) continue;
 
-    // Build citations from sourceIds
     const citations: Citation[] = raw.sourceIds.map((sid) => {
-      // Determine if slide or transcript
       const kind: "slide" | "transcript" = sid.startsWith("S") ? "slide" : "transcript";
-      // Find source text from edit list
       const entry = editList.find((e) => e.sourceIds.includes(sid));
       return { sourceId: sid, kind, text: entry?.sourceText ?? "" };
     });
 
-    // partial entries get partial_fix origin; everything else is addition
     const matchingEntry = [...entryById.values()].find((e) =>
       raw.sourceIds.some((sid) => e.sourceIds.includes(sid)),
     );
@@ -615,8 +397,6 @@ export async function mergeLecture(
     }
   }
 
-  // Apply insertions to mergedList
-  // First do add_after insertions
   for (const ins of insertions.filter((i) => i.afterStudentNoteId !== null)) {
     const targetIdx = mergedList.findIndex(
       (b) => b.origin === "student" && b.noteId === ins.afterStudentNoteId,
@@ -626,7 +406,6 @@ export async function mergeLecture(
     }
   }
 
-  // Then do add_at_window insertions
   for (const ins of insertions.filter((i) => i.afterWindowId !== null)) {
     ins.item.windowId = ins.afterWindowId;
     const insertAfter = insertionPositionForWindow(
@@ -637,12 +416,11 @@ export async function mergeLecture(
     mergedList.splice(insertAfter + 1, 0, ins.item);
   }
 
-  // Add fallback blocks/flags for unanswered entries
+  // Fallback blocks for unanswered entries
   for (const entry of editList) {
     if (answeredEntries.has(entry.id)) continue;
 
     if (entry.type === "conflict" && entry.noteId) {
-      // Fallback: flag the student block as a conflict with no model-placed rewrite
       const targetIdx = mergedList.findIndex(
         (b) => b.origin === "student" && b.noteId === entry.noteId,
       );
@@ -671,7 +449,6 @@ export async function mergeLecture(
         };
       }
     } else if (entry.type !== "conflict") {
-      // Fallback for missing/partial entries: verbatim addition block
       const citations: Citation[] = entry.sourceIds.map((sid) => ({
         sourceId: sid,
         kind: (sid.startsWith("S") ? "slide" : "transcript") as "slide" | "transcript",
@@ -692,13 +469,12 @@ export async function mergeLecture(
         originalPos: -1,
       };
 
-      // Insert at window position
       const insertAfter = insertionPositionForWindow(entry.windowId, mergedList, windows);
       mergedList.splice(insertAfter + 1, 0, fallbackItem);
     }
   }
 
-  // Save merged blocks with final positions
+  // Save merged blocks
   for (let pos = 0; pos < mergedList.length; pos++) {
     const item = mergedList[pos]!;
     const block: MergedBlock = {
@@ -717,6 +493,370 @@ export async function mergeLecture(
     };
     createMergedBlock(db, block);
   }
+}
+
+function buildProcessWindow(
+  db: Database.Database,
+  mergeRun: MergeRun,
+  allBlocks: unknown[],
+  notesData: NotesDocument,
+  slideMap: Map<string, ExtractedSlide>,
+  contextMarginMs: number,
+  noiseThreshold: number,
+  maxRetryAttempts: number,
+  retryBaseMs: number,
+  providers: Providers,
+) {
+  return async function processWindow(
+    window: SlideWindow,
+    existingWr?: WindowResult,
+  ): Promise<boolean> {
+    const bullets: SlideBullet[] = [];
+    for (const slideId of window.mappedSlides) {
+      const slide = slideMap.get(slideId);
+      if (slide) {
+        bullets.push(...slide.bullets);
+      }
+    }
+
+    if (bullets.length === 0) return true;
+
+    const windowResult = existingWr ?? createWindowResult(db, uuidv4(), mergeRun.id, window.id);
+
+    const marginStart = window.startMs - contextMarginMs;
+    const marginEnd = window.endMs + contextMarginMs;
+
+    const abbrevPairs = listAbbreviationPairs(db);
+    const retrievedBlocks: Array<{ id: string; text: string }> = [];
+    const inWindowBlocks: Array<{ id: string; text: string }> = [];
+    for (const block of allBlocks) {
+      const bid = blockId(block);
+      const meta = notesData.meta[bid];
+      if (!meta?.firstEditTime) continue;
+      const rawText = blockText(block);
+      if (!rawText) continue;
+      const expanded = expandAbbreviations(rawText, abbrevPairs);
+
+      if (meta.firstEditTime >= marginStart && meta.firstEditTime <= marginEnd) {
+        retrievedBlocks.push({ id: bid, text: expanded });
+      }
+
+      if (meta.firstEditTime >= window.startMs && meta.firstEditTime < window.endMs) {
+        inWindowBlocks.push({ id: bid, text: expanded });
+      }
+    }
+
+    const coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
+    const questions = bullets.map((b) => ({
+      key: `coverage:${b.id}`,
+      sourceId: b.id,
+      text: b.text,
+    }));
+
+    // Coverage check (skip if already done)
+    let coverageOk = windowResult.coverageStatus === "done";
+    if (!coverageOk) {
+      try {
+        const answers = await retryClassifierCall(
+          () => providers.classifier.classifyCoverage(coverageState, questions),
+          maxRetryAttempts,
+          retryBaseMs,
+        );
+
+        const verdictInputs = questions.map((q) => {
+          const answer = answers[q.key] ?? { label: "missing" as const, probability: 0.0 };
+          let effectiveLabel = answer.label as string;
+          if (answer.label === "noise" && answer.probability < noiseThreshold) {
+            effectiveLabel = "missing";
+          }
+          return {
+            id: uuidv4(),
+            questionKey: q.key,
+            chosenLabel: answer.label,
+            probability: answer.probability,
+            effectiveLabel,
+          };
+        });
+
+        saveVerdicts(db, windowResult.id, verdictInputs);
+        updateWindowResultCoverage(db, windowResult.id, "done");
+        coverageOk = true;
+
+        for (let i = 0; i < verdictInputs.length; i++) {
+          const v = verdictInputs[i]!;
+          const bullet = bullets[i]!;
+          if (v.effectiveLabel === "missing") {
+            createEditListEntry(db, {
+              id: uuidv4(),
+              mergeRunId: mergeRun.id,
+              type: "missing",
+              windowId: window.id,
+              sourceIds: [bullet.id],
+              noteId: null,
+              retrievedNoteIds: [],
+              sourceText: bullet.text,
+            });
+          } else if (v.effectiveLabel === "partially_covered") {
+            createEditListEntry(db, {
+              id: uuidv4(),
+              mergeRunId: mergeRun.id,
+              type: "partial",
+              windowId: window.id,
+              sourceIds: [bullet.id],
+              noteId: null,
+              retrievedNoteIds: retrievedBlocks.map((b) => b.id),
+              sourceText: bullet.text,
+            });
+          }
+        }
+      } catch (err) {
+        updateWindowResultCoverage(
+          db,
+          windowResult.id,
+          "failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    // Conflict check (skip if already done)
+    if (inWindowBlocks.length === 0) {
+      if (windowResult.conflictStatus !== "done") {
+        updateWindowResultConflict(db, windowResult.id, "done");
+      }
+      return coverageOk;
+    }
+
+    const poolState = "Pool:\n" + bullets.map((b) => `${b.id}: ${b.text}`).join("\n");
+    const conflictQuestions = inWindowBlocks.map((b) => ({
+      key: `conflict:${b.id}`,
+      noteBlockId: b.id,
+      text: b.text,
+    }));
+
+    let conflictOk = windowResult.conflictStatus === "done";
+    if (!conflictOk) {
+      try {
+        const conflictAnswers = await retryClassifierCall(
+          () => providers.classifier.checkConflicts(poolState, conflictQuestions),
+          maxRetryAttempts,
+          retryBaseMs,
+        );
+
+        const conflictVerdictInputs = conflictQuestions.map((q) => {
+          const answer = conflictAnswers[q.key] ?? {
+            label: "supported" as const,
+            probability: 0.99,
+          };
+          return {
+            id: uuidv4(),
+            questionKey: q.key,
+            chosenLabel: answer.label,
+            probability: answer.probability,
+            effectiveLabel: answer.label,
+          };
+        });
+
+        saveVerdicts(db, windowResult.id, conflictVerdictInputs);
+        updateWindowResultConflict(db, windowResult.id, "done");
+        conflictOk = true;
+
+        const allSourceIds = bullets.map((b) => b.id);
+        for (let i = 0; i < conflictVerdictInputs.length; i++) {
+          const v = conflictVerdictInputs[i]!;
+          if (v.effectiveLabel === "conflicts") {
+            const block = inWindowBlocks[i]!;
+            createEditListEntry(db, {
+              id: uuidv4(),
+              mergeRunId: mergeRun.id,
+              type: "conflict",
+              windowId: window.id,
+              sourceIds: allSourceIds,
+              noteId: block.id,
+              retrievedNoteIds: [],
+              sourceText: block.text,
+            });
+          }
+        }
+      } catch (err) {
+        updateWindowResultConflict(
+          db,
+          windowResult.id,
+          "failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    return coverageOk && conflictOk;
+  };
+}
+
+export async function mergeLecture(
+  db: Database.Database,
+  lectureId: string,
+  providers: Providers,
+  config: Config,
+): Promise<MergeRun> {
+  const lecture = getLecture(db, lectureId);
+  if (!lecture) throw new Error("Lecture not found");
+
+  const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
+  if (!SEALED_STAGES.has(lecture.stage)) {
+    throw new Error("Lecture is not sealed");
+  }
+
+  if (getMergeRunByLectureId(db, lectureId)) {
+    throw new Error("ALREADY_MERGED");
+  }
+
+  const slidesPath = path.join(lecture.dataDir, "slides.json");
+  if (!existsSync(slidesPath)) {
+    throw new Error("No slides found for this lecture");
+  }
+  const slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
+  const slideMap = new Map<string, ExtractedSlide>(slides.map((s) => [s.id, s]));
+
+  const notesData = JSON.parse(lecture.notesData) as NotesDocument;
+  const markers = listMarkers(db, lectureId);
+  const windows = computeWindows(markers, notesData, slides.length);
+
+  const mergeRun = createMergeRun(db, uuidv4(), lectureId);
+
+  const contextMarginMs = config.contextMarginMs ?? 60000;
+  const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
+  const concurrency = config.mergeWindowConcurrency ?? 4;
+  const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;
+  const retryBaseMs = config.mergeWindowRetryBaseMs ?? 100;
+
+  const allBlocks = notesData.blocks as unknown[];
+
+  const processWindow = buildProcessWindow(
+    db, mergeRun, allBlocks, notesData, slideMap,
+    contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
+  );
+
+  const queue = [...windows];
+  const running: Promise<void>[] = [];
+
+  async function drainQueue(): Promise<void> {
+    while (queue.length > 0 || running.length > 0) {
+      while (running.length < concurrency && queue.length > 0) {
+        const win = queue.shift()!;
+        const p = processWindow(win).then(() => {
+          running.splice(running.indexOf(p), 1);
+        });
+        running.push(p);
+      }
+      if (running.length > 0) await Promise.race(running);
+    }
+  }
+
+  await drainQueue();
+
+  // Check for failures
+  const allWindowResults = getWindowResultsByMergeRunId(db, mergeRun.id);
+  const failedWindowIds = allWindowResults
+    .filter((wr) => wr.coverageStatus === "failed" || wr.conflictStatus === "failed")
+    .map((wr) => wr.windowId);
+
+  if (failedWindowIds.length > 0) {
+    updateMergeRunState(db, mergeRun.id, "paused", failedWindowIds);
+    return getMergeRunByLectureId(db, lectureId)!;
+  }
+
+  updateMergeRunState(db, mergeRun.id, "haiku");
+
+  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, notesData, providers);
+
+  updateMergeRunState(db, mergeRun.id, "done");
+  updateLectureStage(db, lectureId, "review");
+
+  return getMergeRunByLectureId(db, lectureId)!;
+}
+
+export async function retryMergeLecture(
+  db: Database.Database,
+  lectureId: string,
+  providers: Providers,
+  config: Config,
+): Promise<MergeRun> {
+  const lecture = getLecture(db, lectureId);
+  if (!lecture) throw new Error("Lecture not found");
+
+  const mergeRun = getMergeRunByLectureId(db, lectureId);
+  if (!mergeRun) throw new Error("NO_MERGE_RUN");
+  if (mergeRun.state !== "paused") throw new Error("MERGE_NOT_PAUSED");
+
+  const slidesPath = path.join(lecture.dataDir, "slides.json");
+  if (!existsSync(slidesPath)) throw new Error("No slides found for this lecture");
+  const slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
+  const slideMap = new Map<string, ExtractedSlide>(slides.map((s) => [s.id, s]));
+
+  const notesData = JSON.parse(lecture.notesData) as NotesDocument;
+  const markers = listMarkers(db, lectureId);
+  const windows = computeWindows(markers, notesData, slides.length);
+
+  const contextMarginMs = config.contextMarginMs ?? 60000;
+  const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
+  const concurrency = config.mergeWindowConcurrency ?? 4;
+  const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;
+  const retryBaseMs = config.mergeWindowRetryBaseMs ?? 100;
+
+  const allBlocks = notesData.blocks as unknown[];
+
+  // Get existing window results
+  const existingWindowResults = getWindowResultsByMergeRunId(db, mergeRun.id);
+  const windowResultMap = new Map(existingWindowResults.map((wr) => [wr.windowId, wr]));
+
+  // Reset state to running
+  updateMergeRunState(db, mergeRun.id, "running", []);
+
+  const processWindow = buildProcessWindow(
+    db, mergeRun, allBlocks, notesData, slideMap,
+    contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
+  );
+
+  // Only retry windows that are not fully done
+  const windowsToRetry = windows.filter((w) => {
+    const wr = windowResultMap.get(w.id);
+    if (!wr) return true;
+    return wr.coverageStatus !== "done" || wr.conflictStatus !== "done";
+  });
+
+  const queue = [...windowsToRetry];
+  const running: Promise<void>[] = [];
+
+  async function drainQueue(): Promise<void> {
+    while (queue.length > 0 || running.length > 0) {
+      while (running.length < concurrency && queue.length > 0) {
+        const win = queue.shift()!;
+        const existingWr = windowResultMap.get(win.id);
+        const p = processWindow(win, existingWr).then(() => {
+          running.splice(running.indexOf(p), 1);
+        });
+        running.push(p);
+      }
+      if (running.length > 0) await Promise.race(running);
+    }
+  }
+
+  await drainQueue();
+
+  // Check for remaining failures
+  const allWindowResults = getWindowResultsByMergeRunId(db, mergeRun.id);
+  const failedWindowIds = allWindowResults
+    .filter((wr) => wr.coverageStatus === "failed" || wr.conflictStatus === "failed")
+    .map((wr) => wr.windowId);
+
+  if (failedWindowIds.length > 0) {
+    updateMergeRunState(db, mergeRun.id, "paused", failedWindowIds);
+    return getMergeRunByLectureId(db, lectureId)!;
+  }
+
+  updateMergeRunState(db, mergeRun.id, "haiku");
+
+  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, notesData, providers);
 
   updateMergeRunState(db, mergeRun.id, "done");
   updateLectureStage(db, lectureId, "review");

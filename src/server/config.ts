@@ -22,6 +22,8 @@ export interface Config {
   };
   contextMarginMs: number;
   mergeWindowConcurrency: number;
+  mergeWindowRetryAttempts?: number;
+  mergeWindowRetryBaseMs?: number;
   chunkTargetMs: number;
 }
 

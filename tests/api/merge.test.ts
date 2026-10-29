@@ -3,7 +3,54 @@ import FormData from "form-data";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
-import { ScriptedClassifier, ScriptedWritingModel } from "../../src/providers/fakes.js";
+import { ScriptedClassifier, ScriptedWritingModel, FailableClassifier } from "../../src/providers/fakes.js";
+
+// Builds a minimal valid multi-page PDF (one title + one bullet per page)
+function buildMultiSlidePdf(pages: Array<{ title: string; bullet: string }>): Buffer {
+  const n = pages.length;
+  const numObjs = 3 + n * 2;
+  const objBodies: string[] = [""];
+  const kids = pages.map((_, i) => `${4 + i * 2} 0 R`).join(" ");
+  objBodies.push(`<</Type /Catalog /Pages 2 0 R>>`);
+  objBodies.push(`<</Type /Pages /Kids [${kids}] /Count ${n}>>`);
+  objBodies.push(`<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>`);
+
+  for (let i = 0; i < n; i++) {
+    const contentObjNum = 5 + i * 2;
+    const titleEsc = pages[i]!.title.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+    const bulletEsc = (`- ${pages[i]!.bullet}`).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+    let stream = "";
+    stream += `BT /F1 24 Tf 50 720 Td (${titleEsc}) Tj ET\n`;
+    stream += `BT /F1 12 Tf 50 670 Td (${bulletEsc}) Tj ET\n`;
+    objBodies.push(
+      `<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentObjNum} 0 R /Resources <</Font <</F1 3 0 R>>>>>>`,
+    );
+    objBodies.push(`<</Length ${stream.length}>>\nstream\n${stream}endstream`);
+  }
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = new Array(numObjs + 1).fill(0) as number[];
+  for (let i = 1; i <= numObjs; i++) {
+    offsets[i] = pdf.length;
+    pdf += `${i} 0 obj\n${objBodies[i]}\nendobj\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${numObjs + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i <= numObjs; i++) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<</Size ${numObjs + 1} /Root 1 0 R>>\n`;
+  pdf += `startxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, "binary");
+}
+
+function buildTwoSlidePdf(): Buffer {
+  return buildMultiSlidePdf([
+    { title: "Slide One Title", bullet: "First slide bullet" },
+    { title: "Slide Two Title", bullet: "Second slide bullet" },
+  ]);
+}
 
 // Builds a minimal valid PDF with a title and one bullet per page
 function buildOneSlidePdf(title: string, bulletText: string): Buffer {
@@ -697,5 +744,269 @@ describe("Conflict check → yellow flags", () => {
     // Each block flagged exactly once
     expect(blocks.filter((b) => b.noteId === "B01" && b.origin === "conflict")).toHaveLength(1);
     expect(blocks.filter((b) => b.noteId === "B02" && b.origin === "conflict")).toHaveLength(1);
+  });
+});
+
+describe("Merge failure handling: pause and resume", () => {
+  it("retries on 429 (retryable) and succeeds after transient failures", async () => {
+    const failableClassifier = new FailableClassifier();
+    // Two 429 failures, then success (no failure scheduled → parent ScriptedClassifier default: covered)
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+
+    server.close();
+    const freshServer = await startTestServer({ classifier: failableClassifier, writingModel });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+
+      const { status, body } = await postMerge(freshServer.url, lecture.id);
+      expect(status).toBe(201);
+      expect((body as MergeResponse).mergeRun.state).toBe("done");
+      // coverage_attempts = 1: retry is transparent at DB level (settled once as "done")
+      const mergeRunId = (body as MergeResponse).mergeRun.id;
+      const wr = freshServer.db
+        .prepare("SELECT * FROM window_results WHERE merge_run_id = ?")
+        .get(mergeRunId) as { coverage_attempts: number; coverage_status: string };
+      expect(wr.coverage_status).toBe("done");
+      expect(wr.coverage_attempts).toBe(1);
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("retries honor Retry-After delay from 529 error", async () => {
+    const failableClassifier = new FailableClassifier();
+    failableClassifier.scheduleCoverageCall({ statusCode: 529, retryAfterMs: 1 });
+    // 2nd call succeeds
+
+    server.close();
+    const freshServer = await startTestServer({ classifier: failableClassifier, writingModel });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+
+      const { status, body } = await postMerge(freshServer.url, lecture.id);
+      expect(status).toBe(201);
+      expect((body as MergeResponse).mergeRun.state).toBe("done");
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("exhausted retries pause the merge with failedWindowIds; Haiku is not called", async () => {
+    const failableClassifier = new FailableClassifier();
+    // Fail all 3 attempts (default maxRetryAttempts = 3)
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+
+    let haikuCallCount = 0;
+    const capturingWritingModel = new ScriptedWritingModel();
+    const origGenerate = capturingWritingModel.generateOperations.bind(capturingWritingModel);
+    capturingWritingModel.generateOperations = async (input: unknown) => {
+      haikuCallCount++;
+      return origGenerate(input);
+    };
+
+    server.close();
+    const freshServer = await startTestServer({
+      classifier: failableClassifier,
+      writingModel: capturingWritingModel,
+    });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+
+      const { status, body } = await postMerge(freshServer.url, lecture.id);
+      expect(status).toBe(201);
+      const run = (body as MergeResponse).mergeRun;
+      expect(run.state).toBe("paused");
+      expect(run.failedWindowIds).toHaveLength(1);
+      expect(haikuCallCount).toBe(0);
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("GET /merge returns failedWindowIds when paused", async () => {
+    const failableClassifier = new FailableClassifier();
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+
+    server.close();
+    const freshServer = await startTestServer({ classifier: failableClassifier, writingModel });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+      await postMerge(freshServer.url, lecture.id);
+
+      const { status, body } = await getMerge(freshServer.url, lecture.id);
+      expect(status).toBe(200);
+      const run = (body as MergeStatusResponse).mergeRun;
+      expect(run.state).toBe("paused");
+      expect(run.failedWindowIds.length).toBeGreaterThan(0);
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("retry re-runs only failed windows and completes the merge", async () => {
+    const failableClassifier = new FailableClassifier();
+    // Fail all 3 retry attempts for the first merge
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    // No more failures → retry call succeeds
+
+    server.close();
+    const freshServer = await startTestServer({ classifier: failableClassifier, writingModel });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+
+      // First attempt: should pause
+      await postMerge(freshServer.url, lecture.id);
+      const getMergeResult = await getMerge(freshServer.url, lecture.id);
+      expect((getMergeResult.body as MergeStatusResponse).mergeRun.state).toBe("paused");
+
+      // Retry with no more failures scripted — should succeed
+      const retryRes = await fetch(
+        `${freshServer.url}/api/lectures/${lecture.id}/merge/retry`,
+        { method: "POST" },
+      );
+      const retryBody = await retryRes.json() as { mergeRun: MergeRun; mergedNote: MergedBlock[] };
+      expect(retryRes.status).toBe(200);
+      expect(retryBody.mergeRun.state).toBe("done");
+      expect(retryBody.mergeRun.failedWindowIds).toHaveLength(0);
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("per-window persistence: finished windows are not reprocessed on retry", async () => {
+    const twoSlidePdf = buildTwoSlidePdf();
+
+    const failableClassifier = new FailableClassifier();
+    // W001: success (null = use parent's default, which is covered)
+    failableClassifier.scheduleCoverageCall(null);
+    // W002: fail all 3 attempts
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    failableClassifier.scheduleCoverageCall({ statusCode: 429, retryAfterMs: 1 });
+    // After retry: no more failures → W002 succeeds
+
+    server.close();
+    const freshServer = await startTestServer({ classifier: failableClassifier, writingModel });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(freshServer.url);
+      const notes = {
+        blocks: [
+          { id: "B01", type: "paragraph", content: [{ type: "text", text: "Note one" }], children: [] },
+          { id: "B02", type: "paragraph", content: [{ type: "text", text: "Note two" }], children: [] },
+        ],
+        meta: {
+          B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+          B02: { firstEditTime: t + 10 * 60 * 1000, lastEditTime: t + 15 * 60 * 1000 },
+        },
+      };
+      await putNotes(freshServer.url, lecture.id, notes);
+
+      // Seal with 2-slide PDF
+      const form = new FormData();
+      form.append("subjectName", "Anatomy 101");
+      form.append("presentation", twoSlidePdf, {
+        filename: "slides.pdf",
+        contentType: "application/pdf",
+      });
+      const headers = form.getHeaders() as Record<string, string>;
+      await fetch(`${freshServer.url}/api/lectures/${lecture.id}/sources`, {
+        method: "POST",
+        headers,
+        body: form.getBuffer(),
+      });
+
+      // Add a marker between the two blocks to create 2 windows
+      await fetch(`${freshServer.url}/api/lectures/${lecture.id}/markers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timestamp: t + 7 * 60 * 1000, blockId: "B01" }),
+      });
+
+      // First merge attempt: W001 succeeds, W002 fails → paused
+      await postMerge(freshServer.url, lecture.id);
+
+      const mergeRunRes = await getMerge(freshServer.url, lecture.id);
+      const mergeRunState = (mergeRunRes.body as MergeStatusResponse).mergeRun;
+      expect(mergeRunState.state).toBe("paused");
+
+      // Check window result statuses
+      const windowResults = freshServer.db
+        .prepare("SELECT * FROM window_results WHERE merge_run_id = ?")
+        .all(mergeRunState.id) as Array<{
+          window_id: string;
+          coverage_attempts: number;
+          coverage_status: string;
+        }>;
+
+      const w001 = windowResults.find((wr) => wr.window_id === "W001");
+      const w002 = windowResults.find((wr) => wr.window_id === "W002");
+      expect(w001?.coverage_status).toBe("done");
+      expect(w002?.coverage_status).toBe("failed");
+      const w001AttemptsAfterFirst = w001?.coverage_attempts ?? 0;
+
+      // Retry: no more failures → W002 succeeds
+      const retryRes = await fetch(
+        `${freshServer.url}/api/lectures/${lecture.id}/merge/retry`,
+        { method: "POST" },
+      );
+      expect(retryRes.status).toBe(200);
+      const retryBody = await retryRes.json() as { mergeRun: MergeRun };
+      expect(retryBody.mergeRun.state).toBe("done");
+
+      // W001 was NOT reprocessed (attempts unchanged)
+      const windowResultsAfterRetry = freshServer.db
+        .prepare("SELECT * FROM window_results WHERE merge_run_id = ?")
+        .all(mergeRunState.id) as Array<{ window_id: string; coverage_attempts: number }>;
+      const w001After = windowResultsAfterRetry.find((wr) => wr.window_id === "W001");
+      expect(w001After?.coverage_attempts).toBe(w001AttemptsAfterFirst);
+    } finally {
+      freshServer.close();
+    }
+  });
+
+  it("POST /merge/retry returns 409 when merge is not paused (already done)", async () => {
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+    await postMerge(server.url, lecture.id); // succeeds → state = done
+
+    const res = await fetch(
+      `${server.url}/api/lectures/${lecture.id}/merge/retry`,
+      { method: "POST" },
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it("POST /merge/retry returns 404 when no merge run exists", async () => {
+    const lecture = await createLecture(server.url);
+    const res = await fetch(
+      `${server.url}/api/lectures/${lecture.id}/merge/retry`,
+      { method: "POST" },
+    );
+    expect(res.status).toBe(404);
   });
 });

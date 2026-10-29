@@ -7,6 +7,18 @@ import type {
   WritingOperation,
 } from "../shared/types.js";
 
+export class ClassifierRetryableError extends Error {
+  readonly statusCode: number;
+  readonly retryAfterMs: number;
+
+  constructor(statusCode: number, retryAfterMs: number, message: string) {
+    super(message);
+    this.name = "ClassifierRetryableError";
+    this.statusCode = statusCode;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 export interface SpeechToTextProvider {
   transcribeChunk(chunkPath: string, prompt: string): Promise<TranscriptionResult>;
 }

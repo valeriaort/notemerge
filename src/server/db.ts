@@ -868,8 +868,35 @@ export function updateMergeRunState(
   db: Database.Database,
   id: string,
   state: MergeRunState,
+  failedWindowIds?: string[],
 ): void {
-  db.prepare("UPDATE merge_runs SET state = ? WHERE id = ?").run(state, id);
+  if (failedWindowIds !== undefined) {
+    db.prepare("UPDATE merge_runs SET state = ?, failed_window_ids = ? WHERE id = ?")
+      .run(state, JSON.stringify(failedWindowIds), id);
+  } else {
+    db.prepare("UPDATE merge_runs SET state = ? WHERE id = ?").run(state, id);
+  }
+}
+
+export function getWindowResultsByMergeRunId(
+  db: Database.Database,
+  mergeRunId: string,
+): WindowResult[] {
+  const rows = db
+    .prepare("SELECT * FROM window_results WHERE merge_run_id = ?")
+    .all(mergeRunId) as WindowResultRow[];
+  return rows.map(rowToWindowResult);
+}
+
+export function getWindowResultByWindowId(
+  db: Database.Database,
+  mergeRunId: string,
+  windowId: string,
+): WindowResult | undefined {
+  const row = db
+    .prepare("SELECT * FROM window_results WHERE merge_run_id = ? AND window_id = ?")
+    .get(mergeRunId, windowId) as WindowResultRow | undefined;
+  return row ? rowToWindowResult(row) : undefined;
 }
 
 type WindowResultRow = {
