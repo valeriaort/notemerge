@@ -79,6 +79,7 @@ export const strings = {
   review: {
     title: "Review",
     additionLabel: "Addition",
+    partialFixLabel: "Partial fix",
     noMergedNote: "No merged note yet.",
   },
   glossary: {

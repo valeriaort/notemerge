@@ -173,7 +173,7 @@ export async function mergeLecture(
     const marginStart = window.startMs - contextMarginMs;
     const marginEnd = window.endMs + contextMarginMs;
 
-    const retrievedTexts: string[] = [];
+    const retrievedBlocks: Array<{ id: string; text: string }> = [];
     for (const block of allBlocks) {
       const bid = blockId(block);
       const meta = notesData.meta[bid];
@@ -182,12 +182,12 @@ export async function mergeLecture(
         const text = blockText(block);
         if (text) {
           const expanded = expandAbbreviations(text, abbrevPairs);
-          retrievedTexts.push(expanded);
+          retrievedBlocks.push({ id: bid, text: expanded });
         }
       }
     }
 
-    const state = "Notes context:\n" + retrievedTexts.join("\n");
+    const state = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
 
     // Build coverage questions
     const questions = bullets.map((b) => ({
@@ -221,11 +221,11 @@ export async function mergeLecture(
       saveVerdicts(db, windowResult.id, verdictInputs);
       updateWindowResultCoverage(db, windowResult.id, "done");
 
-      // Create edit list entries for missing items
+      // Create edit list entries for missing and partially_covered items
       for (let i = 0; i < verdictInputs.length; i++) {
         const v = verdictInputs[i]!;
+        const bullet = bullets[i]!;
         if (v.effectiveLabel === "missing") {
-          const bullet = bullets[i]!;
           createEditListEntry(db, {
             id: uuidv4(),
             mergeRunId: mergeRun.id,
@@ -234,6 +234,17 @@ export async function mergeLecture(
             sourceIds: [bullet.id],
             noteId: null,
             retrievedNoteIds: [],
+            sourceText: bullet.text,
+          });
+        } else if (v.effectiveLabel === "partially_covered") {
+          createEditListEntry(db, {
+            id: uuidv4(),
+            mergeRunId: mergeRun.id,
+            type: "partial",
+            windowId: window.id,
+            sourceIds: [bullet.id],
+            noteId: null,
+            retrievedNoteIds: retrievedBlocks.map((b) => b.id),
             sourceText: bullet.text,
           });
         }
@@ -460,9 +471,16 @@ export async function mergeLecture(
       return { sourceId: sid, kind, text: entry?.sourceText ?? "" };
     });
 
+    // partial entries get partial_fix origin; everything else is addition
+    const matchingEntry = [...entryById.values()].find((e) =>
+      raw.sourceIds.some((sid) => e.sourceIds.includes(sid)),
+    );
+    const itemOrigin: MergedListItem["origin"] =
+      matchingEntry?.type === "partial" ? "partial_fix" : "addition";
+
     const item: MergedListItem = {
       id: uuidv4(),
-      origin: "addition",
+      origin: itemOrigin,
       windowId: raw.type === "add_at_window" ? raw.windowId : null,
       noteId: null,
       text: raw.text,

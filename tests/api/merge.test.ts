@@ -417,4 +417,112 @@ describe("Merge verdict → merged note", () => {
     expect(additions).toHaveLength(1);
     expect(additions[0]!.citations[0]!.sourceId).toBe("S001-B01");
   });
+
+  it("partially_covered verdict produces a partial_fix block right after the completed block", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "El corazón bombea sangre" }], children: [] },
+        { id: "B02", type: "paragraph", content: [{ type: "text", text: "Other note" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+        B02: { firstEditTime: t + 1000, lastEditTime: t + 6 * 60 * 1000 },
+      },
+    };
+    await putNotes(server.url, lecture.id, notes);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Jev says the bullet is partially covered
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "partially_covered", probability: 0.91 },
+    });
+    // Haiku returns add_after B01 for the specific missing fact
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "Gasto cardíaco: 5 L/min en reposo.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+
+    const b01Idx = blocks.findIndex((b) => b.noteId === "B01");
+    const partialFixIdx = blocks.findIndex((b) => b.origin === "partial_fix");
+    const b02Idx = blocks.findIndex((b) => b.noteId === "B02");
+
+    expect(b01Idx).not.toBe(-1);
+    expect(partialFixIdx).not.toBe(-1);
+    expect(b02Idx).not.toBe(-1);
+
+    // partial_fix is immediately after B01
+    expect(partialFixIdx).toBe(b01Idx + 1);
+    expect(b02Idx).toBe(partialFixIdx + 1);
+
+    const pf = blocks[partialFixIdx]!;
+    expect(pf.text).toBe("Gasto cardíaco: 5 L/min en reposo.");
+    expect(pf.citations[0]!.sourceId).toBe("S001-B01");
+    expect(pf.modelPlaced).toBe(true);
+    expect(pf.reviewState).toBe("kept");
+  });
+
+  it("partially_covered entry carries retrieved note block IDs", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "El corazón bombea sangre" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+      },
+    };
+    await putNotes(server.url, lecture.id, notes);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "partially_covered", probability: 0.88 },
+    });
+    // Writing model captures its input to verify retrievedNoteIds were passed
+    let capturedInput: unknown = null;
+    writingModel.setOperations([]);
+    const originalGenerate = writingModel.generateOperations.bind(writingModel);
+    writingModel.generateOperations = async (input: unknown) => {
+      capturedInput = input;
+      return originalGenerate(input);
+    };
+
+    await postMerge(server.url, lecture.id);
+
+    // The captured edit list entry for the partial verdict should carry B01 as a retrieved note ID
+    const input = capturedInput as {
+      editList: Array<{ type: string; retrievedNoteIds: string[] }>;
+    };
+    const partialEntry = input.editList.find((e) => e.type === "partial");
+    expect(partialEntry).toBeDefined();
+    expect(partialEntry!.retrievedNoteIds).toContain("B01");
+  });
+
+  it("partially_covered verdict with no Haiku answer produces a fallback block", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "El corazón", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "partially_covered", probability: 0.85 },
+    });
+    writingModel.setOperations([]); // Haiku produces nothing
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    // Fallback block should appear (not partial_fix since Haiku gave nothing)
+    const nonStudent = blocks.filter((b) => b.origin !== "student");
+    expect(nonStudent).toHaveLength(1);
+    expect(nonStudent[0]!.origin).toBe("fallback");
+    expect(nonStudent[0]!.citations[0]!.sourceId).toBe("S001-B01");
+  });
 });

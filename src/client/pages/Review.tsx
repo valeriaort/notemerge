@@ -60,17 +60,19 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 function blockStyle(block: MergedBlock): React.CSSProperties {
-  if (block.origin === "addition") return { ...styles.block, ...styles.additionBlock };
+  if (block.origin === "addition" || block.origin === "partial_fix") return { ...styles.block, ...styles.additionBlock };
   if (block.origin === "fallback") return { ...styles.block, ...styles.fallbackBlock };
   return { ...styles.block, ...styles.studentBlock };
 }
 
 function BlockView({ block }: { block: MergedBlock }) {
-  const isAddition = block.origin === "addition" || block.origin === "fallback";
+  const isAddition = block.origin === "addition" || block.origin === "partial_fix" || block.origin === "fallback";
   return (
     <div style={blockStyle(block)} data-testid={`merged-block-${block.origin}`}>
       {isAddition && (
-        <div style={styles.label}>{strings.review.additionLabel}</div>
+        <div style={styles.label}>
+          {block.origin === "partial_fix" ? strings.review.partialFixLabel : strings.review.additionLabel}
+        </div>
       )}
       <div>{block.text}</div>
       {isAddition && block.citations.length > 0 && (
