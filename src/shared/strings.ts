@@ -81,6 +81,7 @@ export const strings = {
     additionLabel: "Addition",
     partialFixLabel: "Partial fix",
     noMergedNote: "No merged note yet.",
+    lockedAfterReview: "Cannot change transcription settings after review decisions have been made.",
   },
   glossary: {
     noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",

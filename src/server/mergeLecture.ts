@@ -604,7 +604,7 @@ export async function mergeLecture(
       proposedRewrite: null,
       citations,
       modelPlaced: true,
-      reviewState: "kept",
+      reviewState: null,
       originalPos: -1,
     };
 
@@ -688,7 +688,7 @@ export async function mergeLecture(
         proposedRewrite: null,
         citations,
         modelPlaced: false,
-        reviewState: "kept",
+        reviewState: null,
         originalPos: -1,
       };
 
