@@ -7,6 +7,7 @@ import type {
 } from "./interfaces.js";
 import type {
   TranscriptionResult,
+  WhisperSegment,
   CoverageQuestion,
   ConflictQuestion,
   CoverageAnswers,
@@ -19,7 +20,30 @@ export class FakeSpeechToText implements SpeechToTextProvider {
     _chunkPath: string,
     _prompt: string,
   ): Promise<TranscriptionResult> {
-    return { sentences: [] };
+    return { segments: [] };
+  }
+}
+
+export class ScriptedSpeechToText implements SpeechToTextProvider {
+  private segmentsByPath: Map<string, WhisperSegment[]> = new Map();
+  private defaultSegments: WhisperSegment[] = [];
+  public capturedPrompts: Array<{ chunkPath: string; prompt: string }> = [];
+
+  setSegments(chunkPath: string, segments: WhisperSegment[]): void {
+    this.segmentsByPath.set(chunkPath, segments);
+  }
+
+  setDefaultSegments(segments: WhisperSegment[]): void {
+    this.defaultSegments = segments;
+  }
+
+  async transcribeChunk(
+    chunkPath: string,
+    prompt: string,
+  ): Promise<TranscriptionResult> {
+    this.capturedPrompts.push({ chunkPath, prompt });
+    const segments = this.segmentsByPath.get(chunkPath) ?? this.defaultSegments;
+    return { segments };
   }
 }
 
