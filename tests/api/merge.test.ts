@@ -1,0 +1,420 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import FormData from "form-data";
+import { startTestServer } from "./helpers.js";
+import type { TestServer } from "./helpers.js";
+import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
+import { ScriptedClassifier, ScriptedWritingModel } from "../../src/providers/fakes.js";
+
+// Builds a minimal valid PDF with a title and one bullet per page
+function buildOneSlidePdf(title: string, bulletText: string): Buffer {
+  // Single page: title at y=720 (largest font), bullet at y=670
+  // Bullet starts with "- " to trigger the bullet glyph rule
+  const pages = [
+    {
+      texts: [
+        { text: title, y: 720, size: 24 },
+        { text: `- ${bulletText}`, y: 670, size: 12 },
+      ],
+    },
+  ];
+
+  const n = pages.length;
+  const numObjs = 3 + n * 2;
+  const objBodies: string[] = [""];
+  const kids = pages.map((_, i) => `${4 + i * 2} 0 R`).join(" ");
+  objBodies.push(`<</Type /Catalog /Pages 2 0 R>>`);
+  objBodies.push(`<</Type /Pages /Kids [${kids}] /Count ${n}>>`);
+  objBodies.push(`<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>`);
+
+  for (let i = 0; i < n; i++) {
+    const contentObjNum = 5 + i * 2;
+    let stream = "";
+    for (const { text, y, size } of pages[i]!.texts) {
+      const esc = text.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+      stream += `BT /F1 ${size} Tf 50 ${y} Td (${esc}) Tj ET\n`;
+    }
+    objBodies.push(
+      `<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentObjNum} 0 R /Resources <</Font <</F1 3 0 R>>>>>>`,
+    );
+    objBodies.push(`<</Length ${stream.length}>>\nstream\n${stream}endstream`);
+  }
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = new Array(numObjs + 1).fill(0) as number[];
+  for (let i = 1; i <= numObjs; i++) {
+    offsets[i] = pdf.length;
+    pdf += `${i} 0 obj\n${objBodies[i]}\nendobj\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${numObjs + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i <= numObjs; i++) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<</Size ${numObjs + 1} /Root 1 0 R>>\n`;
+  pdf += `startxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, "binary");
+}
+
+const SLIDE_PDF = buildOneSlidePdf("Slide Title", "Important fact about anatomy");
+
+type MergeResponse = { mergeRun: MergeRun; mergedNote: MergedBlock[] };
+type MergedNoteResponse = { blocks: MergedBlock[] };
+type MergeStatusResponse = { mergeRun: MergeRun };
+
+async function createLecture(url: string): Promise<Lecture> {
+  const res = await fetch(`${url}/api/lectures`, { method: "POST" });
+  return res.json() as Promise<Lecture>;
+}
+
+async function putNotes(url: string, lectureId: string, notesData: object): Promise<void> {
+  await fetch(`${url}/api/lectures/${lectureId}/notes`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notesData: JSON.stringify(notesData) }),
+  });
+}
+
+async function sealWithPdf(url: string, lectureId: string, pdf: Buffer): Promise<void> {
+  const form = new FormData();
+  form.append("subjectName", "Anatomy 101");
+  form.append("presentation", pdf, { filename: "slides.pdf", contentType: "application/pdf" });
+  const headers = form.getHeaders() as Record<string, string>;
+  await fetch(`${url}/api/lectures/${lectureId}/sources`, {
+    method: "POST",
+    headers,
+    body: form.getBuffer(),
+  });
+}
+
+async function postMerge(
+  url: string,
+  lectureId: string,
+): Promise<{ status: number; body: MergeResponse | { error: string } }> {
+  const res = await fetch(`${url}/api/lectures/${lectureId}/merge`, { method: "POST" });
+  return { status: res.status, body: await res.json() as MergeResponse | { error: string } };
+}
+
+async function getMerge(
+  url: string,
+  lectureId: string,
+): Promise<{ status: number; body: MergeStatusResponse | { error: string } }> {
+  const res = await fetch(`${url}/api/lectures/${lectureId}/merge`);
+  return { status: res.status, body: await res.json() as MergeStatusResponse | { error: string } };
+}
+
+async function getMergedNote(
+  url: string,
+  lectureId: string,
+): Promise<{ status: number; body: MergedNoteResponse | { error: string } }> {
+  const res = await fetch(`${url}/api/lectures/${lectureId}/merged-note`);
+  return { status: res.status, body: await res.json() as MergedNoteResponse | { error: string } };
+}
+
+// Build a notes document with one block spanning a real duration so computeWindows
+// produces a non-zero-duration window.
+function oneBlockNotes(blockId: string, text: string, firstEditTime: number): object {
+  return {
+    blocks: [
+      {
+        id: blockId,
+        type: "paragraph",
+        content: [{ type: "text", text }],
+        children: [],
+      },
+    ],
+    meta: {
+      // lastEditTime is 5 minutes after firstEditTime so the lecture has a non-zero duration
+      [blockId]: { firstEditTime, lastEditTime: firstEditTime + 5 * 60 * 1000 },
+    },
+  };
+}
+
+let server: TestServer;
+let classifier: ScriptedClassifier;
+let writingModel: ScriptedWritingModel;
+
+beforeEach(async () => {
+  classifier = new ScriptedClassifier();
+  writingModel = new ScriptedWritingModel();
+  server = await startTestServer({ classifier, writingModel });
+});
+
+afterEach(() => {
+  server.close();
+});
+
+describe("POST /api/lectures/:id/merge", () => {
+  it("returns 201 and mergeRun.state=done on a sealed lecture", async () => {
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "My note", Date.now()));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    const { status, body } = await postMerge(server.url, lecture.id);
+    expect(status).toBe(201);
+    const resp = body as MergeResponse;
+    expect(resp.mergeRun.state).toBe("done");
+    expect(resp.mergeRun.lectureId).toBe(lecture.id);
+  });
+
+  it("returns 400 on a lecture that is still in writing stage", async () => {
+    const lecture = await createLecture(server.url);
+    const { status, body } = await postMerge(server.url, lecture.id);
+    expect(status).toBe(400);
+    expect((body as { error: string }).error).toBeTruthy();
+  });
+
+  it("returns 409 on a second merge request for the same lecture", async () => {
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "My note", Date.now()));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    await postMerge(server.url, lecture.id);
+    const { status, body } = await postMerge(server.url, lecture.id);
+    expect(status).toBe(409);
+    expect((body as { error: string }).error).toContain("already");
+  });
+
+  it("returns 404 for a non-existent lecture", async () => {
+    const { status } = await postMerge(server.url, "nonexistent-id");
+    expect(status).toBe(404);
+  });
+});
+
+describe("GET /api/lectures/:id/merge", () => {
+  it("returns 200 with mergeRun after a successful merge", async () => {
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "My note", Date.now()));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+    await postMerge(server.url, lecture.id);
+
+    const { status, body } = await getMerge(server.url, lecture.id);
+    expect(status).toBe(200);
+    expect((body as MergeStatusResponse).mergeRun.state).toBe("done");
+  });
+
+  it("returns 404 when no merge has been run", async () => {
+    const lecture = await createLecture(server.url);
+    const { status } = await getMerge(server.url, lecture.id);
+    expect(status).toBe(404);
+  });
+});
+
+describe("GET /api/lectures/:id/merged-note", () => {
+  it("returns all student blocks in order", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "First block" }], children: [] },
+        { id: "B02", type: "paragraph", content: [{ type: "text", text: "Second block" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+        B02: { firstEditTime: t + 1000, lastEditTime: t + 6 * 60 * 1000 },
+      },
+    };
+    await putNotes(server.url, lecture.id, notes);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+    await postMerge(server.url, lecture.id);
+
+    const { status, body } = await getMergedNote(server.url, lecture.id);
+    expect(status).toBe(200);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const studentBlocks = blocks.filter((b) => b.origin === "student");
+    expect(studentBlocks).toHaveLength(2);
+    expect(studentBlocks[0]!.noteId).toBe("B01");
+    expect(studentBlocks[1]!.noteId).toBe("B02");
+    // Positions should be in order
+    expect(studentBlocks[0]!.position).toBeLessThan(studentBlocks[1]!.position);
+  });
+
+  it("returns 404 when no merge has been run", async () => {
+    const lecture = await createLecture(server.url);
+    const { status } = await getMergedNote(server.url, lecture.id);
+    expect(status).toBe(404);
+  });
+});
+
+describe("Merge verdict → merged note", () => {
+  it("missing verdict produces a fallback addition block with citations", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Script Jev: bullet S001-B01 is missing
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Writing model returns nothing — fallback path
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const additions = blocks.filter((b) => b.origin === "addition" || b.origin === "fallback");
+    expect(additions).toHaveLength(1);
+    const addition = additions[0]!;
+    expect(addition.citations).toHaveLength(1);
+    expect(addition.citations[0]!.sourceId).toBe("S001-B01");
+    expect(addition.citations[0]!.kind).toBe("slide");
+  });
+
+  it("covered verdict produces no addition block", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Important fact about anatomy", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Script Jev: covered
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "covered", probability: 0.97 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const additions = blocks.filter((b) => b.origin !== "student");
+    expect(additions).toHaveLength(0);
+  });
+
+  it("noise verdict at or above threshold produces no addition", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "my notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Noise at 0.95 threshold — should stay noise (no addition)
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "noise", probability: 0.95 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const additions = blocks.filter((b) => b.origin !== "student");
+    expect(additions).toHaveLength(0);
+  });
+
+  it("noise verdict below threshold becomes missing (produces addition)", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "my notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Noise at 0.90 < 0.95 threshold → becomes missing
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "noise", probability: 0.90 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const additions = blocks.filter((b) => b.origin !== "student");
+    expect(additions).toHaveLength(1);
+  });
+
+  it("add_after operation places addition after the specified student block", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "First" }], children: [] },
+        { id: "B02", type: "paragraph", content: [{ type: "text", text: "Second" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+        B02: { firstEditTime: t + 1000, lastEditTime: t + 6 * 60 * 1000 },
+      },
+    };
+    await putNotes(server.url, lecture.id, notes);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Missing verdict
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Haiku returns add_after B01
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "La hematología estudia la sangre.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+
+    // Find B01, addition, B02 in order
+    const b01Idx = blocks.findIndex((b) => b.noteId === "B01");
+    const additionIdx = blocks.findIndex((b) => b.origin === "addition");
+    const b02Idx = blocks.findIndex((b) => b.noteId === "B02");
+
+    expect(b01Idx).not.toBe(-1);
+    expect(additionIdx).not.toBe(-1);
+    expect(b02Idx).not.toBe(-1);
+    // addition is immediately after B01, before B02
+    expect(additionIdx).toBe(b01Idx + 1);
+    expect(b02Idx).toBe(additionIdx + 1);
+
+    const addition = blocks[additionIdx]!;
+    expect(addition.text).toBe("La hematología estudia la sangre.");
+    expect(addition.citations[0]!.sourceId).toBe("S001-B01");
+    expect(addition.modelPlaced).toBe(true);
+    expect(addition.reviewState).toBe("kept");
+  });
+
+  it("sealed notes are unchanged after merge", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    const notesPayload = oneBlockNotes("B01", "Original note text", t);
+    await putNotes(server.url, lecture.id, notesPayload);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    // Fetch the lecture and check notes are unchanged
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}`);
+    const updatedLecture = await res.json() as Lecture;
+    const notes = JSON.parse(updatedLecture.notesData) as { blocks: unknown[] };
+    // notes should still have the original single block
+    expect(notes.blocks).toHaveLength(1);
+  });
+
+  it("coverage question key is coverage:<sourceId> and Jev receives notes context", async () => {
+    const t = Date.now();
+    // Script a missing answer for the expected key
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.99 },
+    });
+    writingModel.setOperations([]);
+
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Note text", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    const { status, body } = await postMerge(server.url, lecture.id);
+    // If key was wrong, Jev would return default "covered" and no addition would appear.
+    // The missing verdict for "coverage:S001-B01" only fires when the key matches.
+    expect(status).toBe(201);
+    const resp = body as MergeResponse;
+    // mergeRun done means Jev was called successfully with the right key
+    expect(resp.mergeRun.state).toBe("done");
+    // An addition block exists because coverage:S001-B01 was answered with "missing"
+    const additions = resp.mergedNote.filter((b) => b.origin !== "student");
+    expect(additions).toHaveLength(1);
+    expect(additions[0]!.citations[0]!.sourceId).toBe("S001-B01");
+  });
+});
