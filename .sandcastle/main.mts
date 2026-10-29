@@ -164,7 +164,9 @@ async function withLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T
     } catch (e) {
       const text = errorText(e);
       if (!LIMIT_PATTERN.test(text)) {
-        if (!NETWORK_PATTERN.test(text)) throw e;
+        // An outage usually shows up as a silent agent (idle timeout), not a network error.
+        const idle = /AgentIdleTimeoutError/.test(text);
+        if (!NETWORK_PATTERN.test(text) && !(idle && !(await networkUp()))) throw e;
         const wasDown = !(await networkUp());
         netRetries = wasDown ? 0 : netRetries + 1;
         if (netRetries > NET_MAX_UP_RETRIES) throw e;
