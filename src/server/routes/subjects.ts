@@ -7,6 +7,7 @@ import {
   listSubjects,
   getLastUsedSubject,
   ensureDefaultUser,
+  updateSubjectNotionPage,
 } from "../db.js";
 
 export function subjectRoutes(db: Database.Database): Router {
@@ -31,6 +32,20 @@ export function subjectRoutes(db: Database.Database): Router {
     const user = ensureDefaultUser(db);
     const subject = createSubject(db, uuidv4(), name.trim(), user.id);
     res.status(201).json(subject);
+  });
+
+  router.put("/:id/notion-page", (req: Request, res: Response) => {
+    const { pageId } = req.body as { pageId?: string };
+    if (!pageId?.trim()) {
+      res.status(400).json({ error: "pageId is required" });
+      return;
+    }
+    const subject = updateSubjectNotionPage(db, req.params["id"]!, pageId.trim());
+    if (!subject) {
+      res.status(404).json({ error: "Subject not found" });
+      return;
+    }
+    res.json(subject);
   });
 
   return router;

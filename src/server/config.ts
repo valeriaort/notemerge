@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import path from "path";
@@ -13,7 +13,7 @@ export interface Config {
   groq: { apiKey: string };
   jev: { apiKey: string; model: string };
   haiku: { apiKey: string };
-  notion: { clientId: string; clientSecret: string };
+  notion: { clientId: string; clientSecret: string; accessToken?: string };
   thresholds: {
     whisperAvgLogprob: number;
     whisperNoSpeechProb: number;
@@ -58,4 +58,14 @@ export function loadConfigFrom(root: string): Config {
 
 export function notionCallbackUri(port: number): string {
   return `http://localhost:${port}/api/notion/callback`;
+}
+
+export function saveNotionToken(configRoot: string, accessToken: string): void {
+  const localPath = path.join(configRoot, "config.local.json");
+  const existing = loadJson(localPath) as Partial<Config>;
+  const updated = {
+    ...existing,
+    notion: { ...(existing.notion ?? {}), accessToken },
+  };
+  writeFileSync(localPath, JSON.stringify(updated, null, 2), "utf8");
 }

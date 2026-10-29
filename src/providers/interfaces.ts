@@ -38,11 +38,30 @@ export interface WritingModelProvider {
   }): Promise<WritingOperation[]>;
 }
 
+export interface NotionPage {
+  id: string;
+  title: string;
+  url: string;
+}
+
+export interface NotionExportBlock {
+  type: string;
+  text: string;
+  children: NotionExportBlock[];
+}
+
 export interface NotionProvider {
-  exportNote(
-    note: { blocks: Array<{ id: string; text: string }> },
-    subjectPageId: string,
-  ): Promise<{ pageUrl: string }>;
+  getOAuthUrl(redirectUri: string, state: string): string;
+  exchangeCode(code: string, redirectUri: string): Promise<{ accessToken: string }>;
+  searchPages(accessToken: string, query: string): Promise<NotionPage[]>;
+  createPage(accessToken: string, parentPageId: string | null, title: string): Promise<NotionPage>;
+  getPage(accessToken: string, pageId: string): Promise<NotionPage | null>;
+  createChildPage(
+    accessToken: string,
+    parentPageId: string,
+    title: string,
+    blocks: NotionExportBlock[],
+  ): Promise<{ pageId: string; pageUrl: string }>;
 }
 
 export interface Providers {

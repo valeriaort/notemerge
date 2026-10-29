@@ -15,7 +15,9 @@ import { mergeRoutes } from "./routes/merge.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
 import { reviewLockRoutes } from "./routes/review.js";
 import { exportRoutes } from "./routes/export.js";
+import { notionRoutes } from "./routes/notion.js";
 import { config } from "./config.js";
+import type { Config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +25,7 @@ export function createApp(
   db: Database.Database,
   dataDir: string,
   _providers: Providers,
+  cfg: Config = config,
 ) {
   const app = express();
 
@@ -33,18 +36,14 @@ export function createApp(
   app.use("/api/lectures", audioSourcesRoutes(db, dataDir));
   app.use("/api/lectures", abbreviationLectureRoutes(db));
   app.use("/api/lectures", windowRoutes(db));
-  app.use("/api/lectures", mergeRoutes(db, _providers, config));
-  app.use("/api/lectures", transcriptionRoutes(db, _providers, config));
+  app.use("/api/lectures", mergeRoutes(db, _providers, cfg));
+  app.use("/api/lectures", transcriptionRoutes(db, _providers, cfg));
   app.use("/api/lectures", reviewLockRoutes(db));
-  app.use("/api/lectures", exportRoutes(db));
+  app.use("/api/lectures", exportRoutes(db, _providers, cfg));
   app.use("/api/subjects", subjectRoutes(db));
   app.use("/api/subjects", glossaryRoutes(db, dataDir));
   app.use("/api/abbreviations", abbreviationRoutes(db));
-
-  // Reserved for Notion OAuth ticket (#29)
-  app.get("/api/notion/callback", (_req, res) => {
-    res.status(501).json({ error: "Not implemented — see ticket #29" });
-  });
+  app.use("/api/notion", notionRoutes(db, _providers, cfg));
 
   // Serve React client in production
   const clientDist = path.resolve(__dirname, "../../dist/client");

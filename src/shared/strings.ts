@@ -92,6 +92,18 @@ export const strings = {
     cleanPreviewToggle: "Clean preview",
     exportedStage: "Exported",
   },
+  notion: {
+    missingCode: "Missing authorization code.",
+    oauthFailed: "Notion OAuth failed.",
+    notConnected: "Notion is not connected. Authorize via OAuth first.",
+    searchFailed: "Failed to search Notion pages.",
+    titleRequired: "A page title is required.",
+    createPageFailed: "Failed to create Notion page.",
+    noSubject: "This lecture has no subject assigned.",
+    pickerRequired: "Choose a Notion page for this subject first.",
+    parentPageMissing: "The stored Notion page is missing or unshared. Please choose a new page.",
+    exportFailed: "Notion export failed.",
+  },
   glossary: {
     noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",
     guiaLabel: "Guía docente (optional)",

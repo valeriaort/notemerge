@@ -39,6 +39,7 @@ export type DbRow = {
   data_dir: string;
   notes_data: string;
   presentation_path: string | null;
+  notion_page_url: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -50,6 +51,7 @@ export type SubjectRow = {
   created_at: number;
   glossary_terms: string | null;
   guia_docente_path: string | null;
+  notion_parent_page_id: string | null;
 };
 
 function rowToSubject(row: SubjectRow): Subject {
@@ -60,6 +62,7 @@ function rowToSubject(row: SubjectRow): Subject {
     createdAt: row.created_at,
     glossaryTerms: row.glossary_terms ? (JSON.parse(row.glossary_terms) as string[]) : [],
     guiaDocente: row.guia_docente_path ?? null,
+    notionParentPageId: row.notion_parent_page_id ?? null,
   };
 }
 
@@ -72,6 +75,7 @@ function rowToLecture(row: DbRow): Lecture {
     dataDir: row.data_dir,
     notesData: row.notes_data,
     presentationPath: row.presentation_path ?? null,
+    notionPageUrl: row.notion_page_url ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -263,6 +267,8 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN last_error TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN raw_response TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE subjects ADD COLUMN notion_parent_page_id TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE lectures ADD COLUMN notion_page_url TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -425,6 +431,40 @@ export function updateSubjectGlossary(
     .run(JSON.stringify(terms), guiaPath, subjectId);
   if (result.changes === 0) return undefined;
   return getSubject(db, subjectId);
+}
+
+export function updateSubjectNotionPage(
+  db: Database.Database,
+  subjectId: string,
+  pageId: string,
+): Subject | undefined {
+  const result = db
+    .prepare("UPDATE subjects SET notion_parent_page_id = ? WHERE id = ?")
+    .run(pageId, subjectId);
+  if (result.changes === 0) return undefined;
+  return getSubject(db, subjectId);
+}
+
+export function updateLectureNotionUrl(
+  db: Database.Database,
+  lectureId: string,
+  url: string,
+): void {
+  db.prepare("UPDATE lectures SET notion_page_url = ? WHERE id = ?").run(url, lectureId);
+}
+
+export function countLectureNotionExportsForDay(
+  db: Database.Database,
+  subjectId: string,
+  dateStr: string,
+): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) as cnt FROM lectures
+     WHERE subject_id = ?
+       AND notion_page_url IS NOT NULL
+       AND date(created_at / 1000, 'unixepoch') = ?`,
+  ).get(subjectId, dateStr) as { cnt: number };
+  return row.cnt;
 }
 
 // Abbreviation dictionary functions

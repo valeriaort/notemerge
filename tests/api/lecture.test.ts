@@ -214,8 +214,8 @@ describe("config", () => {
 });
 
 describe("GET /api/notion/callback", () => {
-  it("returns 501 (reserved for ticket #29)", async () => {
+  it("returns 400 when no code is provided", async () => {
     const res = await fetch(`${server.url}/api/notion/callback`);
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(400);
   });
 });

@@ -22,6 +22,7 @@ export interface Lecture {
   dataDir: string;
   notesData: string;
   presentationPath: string | null;
+  notionPageUrl: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -33,6 +34,7 @@ export interface Subject {
   createdAt: number;
   glossaryTerms: string[];
   guiaDocente: string | null;
+  notionParentPageId: string | null;
 }
 
 export interface User {
