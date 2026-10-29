@@ -98,3 +98,11 @@ export interface UnknownToken {
   text: string;
   frequency: number;
 }
+
+export type SlideWindow = {
+  id: string;
+  startMs: number;
+  endMs: number;
+  mappedSlides: string[];
+  blockIds: string[];
+};

@@ -40,6 +40,10 @@ export const strings = {
     slidesExtracted: "slides extracted",
     continueButton: "Continue",
   },
+  windows: {
+    countDiffNotice: (windows: number, slides: number) =>
+      `${windows} window${windows === 1 ? "" : "s"}, ${slides} slide${slides === 1 ? "" : "s"}`,
+  },
   errors: {
     lectureNotFound: "Lecture not found.",
     saveFailed: "Failed to save notes. Please try again.",

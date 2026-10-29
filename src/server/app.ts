@@ -10,6 +10,7 @@ import { subjectRoutes } from "./routes/subjects.js";
 import { sourcesRoutes } from "./routes/sources.js";
 import { abbreviationRoutes, abbreviationLectureRoutes } from "./routes/abbreviations.js";
 import { glossaryRoutes } from "./routes/glossary.js";
+import { windowRoutes } from "./routes/windows.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +27,7 @@ export function createApp(
   app.use("/api/lectures", markerRoutes(db));
   app.use("/api/lectures", sourcesRoutes(db));
   app.use("/api/lectures", abbreviationLectureRoutes(db));
+  app.use("/api/lectures", windowRoutes(db));
   app.use("/api/subjects", subjectRoutes(db));
   app.use("/api/subjects", glossaryRoutes(db, dataDir));
   app.use("/api/abbreviations", abbreviationRoutes(db));
