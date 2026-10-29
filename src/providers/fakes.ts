@@ -59,9 +59,14 @@ export class FakeWritingModel implements WritingModelProvider {
 
 export class ScriptedClassifier implements ClassifierProvider {
   private coverageMap: CoverageAnswers = {};
+  private conflictMap: ConflictAnswers = {};
 
   addCoverageAnswers(answers: CoverageAnswers): void {
     Object.assign(this.coverageMap, answers);
+  }
+
+  addConflictAnswers(answers: ConflictAnswers): void {
+    Object.assign(this.conflictMap, answers);
   }
 
   async classifyCoverage(
@@ -79,11 +84,11 @@ export class ScriptedClassifier implements ClassifierProvider {
     _state: string,
     questions: ConflictQuestion[],
   ): Promise<ConflictAnswers> {
-    const answers: ConflictAnswers = {};
+    const result: ConflictAnswers = {};
     for (const q of questions) {
-      answers[q.key] = { label: "supported", probability: 0.99 };
+      result[q.key] = this.conflictMap[q.key] ?? { label: "supported", probability: 0.99 };
     }
-    return answers;
+    return result;
   }
 }
 
