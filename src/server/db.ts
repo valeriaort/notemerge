@@ -906,7 +906,7 @@ export function createWindowResult(
 ): WindowResult {
   db.prepare(
     `INSERT INTO window_results (id, merge_run_id, window_id, coverage_status, coverage_attempts, conflict_status, conflict_attempts)
-     VALUES (?, ?, ?, 'pending', 0, 'done', 0)`,
+     VALUES (?, ?, ?, 'pending', 0, 'pending', 0)`,
   ).run(id, mergeRunId, windowId);
   return rowToWindowResult(
     db.prepare("SELECT * FROM window_results WHERE id = ?").get(id) as WindowResultRow,
@@ -921,6 +921,17 @@ export function updateWindowResultCoverage(
 ): void {
   db.prepare(
     "UPDATE window_results SET coverage_status = ?, coverage_last_error = ?, coverage_attempts = coverage_attempts + 1 WHERE id = ?",
+  ).run(status, error ?? null, id);
+}
+
+export function updateWindowResultConflict(
+  db: Database.Database,
+  id: string,
+  status: WindowResultStatus,
+  error?: string,
+): void {
+  db.prepare(
+    "UPDATE window_results SET conflict_status = ?, conflict_last_error = ?, conflict_attempts = conflict_attempts + 1 WHERE id = ?",
   ).run(status, error ?? null, id);
 }
 

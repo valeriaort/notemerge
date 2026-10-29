@@ -27,6 +27,7 @@ import {
   updateLectureStage,
   updateMergeRunState,
   updateWindowResultCoverage,
+  updateWindowResultConflict,
 } from "./db.js";
 import { computeWindows } from "../shared/slideWindows.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
@@ -107,6 +108,8 @@ type MergedListItem = {
   windowId: string | null;
   noteId: string | null;
   text: string;
+  originalText: string | null;
+  proposedRewrite: string | null;
   citations: Citation[];
   modelPlaced: boolean;
   reviewState: string | null;
@@ -174,20 +177,26 @@ export async function mergeLecture(
     const marginEnd = window.endMs + contextMarginMs;
 
     const retrievedBlocks: Array<{ id: string; text: string }> = [];
+    const inWindowBlocks: Array<{ id: string; text: string }> = [];
     for (const block of allBlocks) {
       const bid = blockId(block);
       const meta = notesData.meta[bid];
       if (!meta?.firstEditTime) continue;
+      const rawText = blockText(block);
+      if (!rawText) continue;
+      const expanded = expandAbbreviations(rawText, abbrevPairs);
+
       if (meta.firstEditTime >= marginStart && meta.firstEditTime <= marginEnd) {
-        const text = blockText(block);
-        if (text) {
-          const expanded = expandAbbreviations(text, abbrevPairs);
-          retrievedBlocks.push({ id: bid, text: expanded });
-        }
+        retrievedBlocks.push({ id: bid, text: expanded });
+      }
+
+      // In-window blocks (strictly inside window) for conflict check
+      if (meta.firstEditTime >= window.startMs && meta.firstEditTime < window.endMs) {
+        inWindowBlocks.push({ id: bid, text: expanded });
       }
     }
 
-    const state = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
+    const coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
 
     // Build coverage questions
     const questions = bullets.map((b) => ({
@@ -198,8 +207,9 @@ export async function mergeLecture(
 
     const windowResult = createWindowResult(db, uuidv4(), mergeRun.id, window.id);
 
+    // Coverage check
     try {
-      const answers = await providers.classifier.classifyCoverage(state, questions);
+      const answers = await providers.classifier.classifyCoverage(coverageState, questions);
 
       // Save verdicts
       const verdictInputs = questions.map((q) => {
@@ -251,6 +261,69 @@ export async function mergeLecture(
       }
     } catch (err) {
       updateWindowResultCoverage(
+        db,
+        windowResult.id,
+        "failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    // Conflict check: one question per in-window note block against the pool
+    if (inWindowBlocks.length === 0) {
+      updateWindowResultConflict(db, windowResult.id, "done");
+      return;
+    }
+
+    const poolState = "Pool:\n" + bullets.map((b) => `${b.id}: ${b.text}`).join("\n");
+    const conflictQuestions = inWindowBlocks.map((b) => ({
+      key: `conflict:${b.id}`,
+      noteBlockId: b.id,
+      text: b.text,
+    }));
+
+    try {
+      const conflictAnswers = await providers.classifier.checkConflicts(
+        poolState,
+        conflictQuestions,
+      );
+
+      const conflictVerdictInputs = conflictQuestions.map((q) => {
+        const answer = conflictAnswers[q.key] ?? {
+          label: "supported" as const,
+          probability: 0.99,
+        };
+        return {
+          id: uuidv4(),
+          questionKey: q.key,
+          chosenLabel: answer.label,
+          probability: answer.probability,
+          effectiveLabel: answer.label,
+        };
+      });
+
+      saveVerdicts(db, windowResult.id, conflictVerdictInputs);
+      updateWindowResultConflict(db, windowResult.id, "done");
+
+      // Create edit list entries for conflicting blocks
+      const allSourceIds = bullets.map((b) => b.id);
+      for (let i = 0; i < conflictVerdictInputs.length; i++) {
+        const v = conflictVerdictInputs[i]!;
+        if (v.effectiveLabel === "conflicts") {
+          const block = inWindowBlocks[i]!;
+          createEditListEntry(db, {
+            id: uuidv4(),
+            mergeRunId: mergeRun.id,
+            type: "conflict",
+            windowId: window.id,
+            sourceIds: allSourceIds,
+            noteId: block.id,
+            retrievedNoteIds: [],
+            sourceText: block.text,
+          });
+        }
+      }
+    } catch (err) {
+      updateWindowResultConflict(
         db,
         windowResult.id,
         "failed",
@@ -341,13 +414,28 @@ export async function mergeLecture(
       }
     }
 
-    // Find which entry this operation answers (match by sourceIds overlap)
+    // Find which entry this operation answers
     let entryId: string | null = null;
     for (const [eid, entry] of entryById) {
-      if (op.sourceIds.some((sid) => entry.sourceIds.includes(sid))) {
-        if (!answeredEntries.has(eid)) {
-          entryId = eid;
-          break;
+      if (op.type === "rewrite") {
+        // Rewrite ops match conflict entries by noteId and sourceIds overlap
+        if (
+          entry.type === "conflict" &&
+          entry.noteId === op.blockId &&
+          op.sourceIds.some((sid) => entry.sourceIds.includes(sid))
+        ) {
+          if (!answeredEntries.has(eid)) {
+            entryId = eid;
+            break;
+          }
+        }
+      } else {
+        // Add ops match by sourceIds overlap
+        if (op.sourceIds.some((sid) => entry.sourceIds.includes(sid))) {
+          if (!answeredEntries.has(eid)) {
+            entryId = eid;
+            break;
+          }
         }
       }
     }
@@ -399,6 +487,8 @@ export async function mergeLecture(
       windowId: windowForBlock?.id ?? null,
       noteId: bid,
       text: blockText(block),
+      originalText: null,
+      proposedRewrite: null,
       citations: [],
       modelPlaced: false,
       reviewState: null,
@@ -406,31 +496,58 @@ export async function mergeLecture(
     });
   }
 
-  // For each accepted operation, insert addition blocks
-  const acceptedOps = rawOps
-    .map((op) => {
-      const target =
-        op.type === "add_after" || op.type === "rewrite"
-          ? op.blockId
-          : op.type === "add_at_window"
-            ? op.windowId
-            : "";
-      return { op, target };
-    })
-    .filter(({ op, target }) => {
-      const opTarget =
-        op.type === "add_after" || op.type === "rewrite"
-          ? op.blockId
-          : op.type === "add_at_window"
-            ? op.windowId
-            : "";
-      // Check it was accepted
-      return op.sourceIds.some((sid) => validSourceIds.has(sid)) &&
-        (op.type === "add_after" ? validBlockIds.has(target) :
-         op.type === "add_at_window" ? validWindowIds.has(target) : false);
+  // For each accepted rewrite op, mark the student block as a conflict block
+  for (const raw of rawOps) {
+    if (raw.type !== "rewrite") continue;
+    if (!validBlockIds.has(raw.blockId)) continue;
+    let hasValidSources = true;
+    for (const sid of raw.sourceIds) {
+      if (!validSourceIds.has(sid)) {
+        hasValidSources = false;
+        break;
+      }
+    }
+    if (!hasValidSources) continue;
+
+    // Only process if the corresponding conflict entry was answered
+    const conflictEntry = editList.find(
+      (e) => e.type === "conflict" && e.noteId === raw.blockId,
+    );
+    if (!conflictEntry || !answeredEntries.has(conflictEntry.id)) continue;
+
+    const targetIdx = mergedList.findIndex(
+      (b) => b.origin === "student" && b.noteId === raw.blockId,
+    );
+    if (targetIdx === -1) continue;
+
+    const item = mergedList[targetIdx]!;
+
+    // Build citations using slideMap for slide bullet text
+    const citations: Citation[] = raw.sourceIds.map((sid) => {
+      const kind: "slide" | "transcript" = sid.startsWith("S") ? "slide" : "transcript";
+      let text = "";
+      if (kind === "slide") {
+        const slideId = sid.split("-B")[0];
+        if (slideId) {
+          const slide = slideMap.get(slideId);
+          text = slide?.bullets.find((b) => b.id === sid)?.text ?? "";
+        }
+      }
+      return { sourceId: sid, kind, text };
     });
 
-  // Collect add_after and add_at_window ops (in order they come from Haiku)
+    mergedList[targetIdx] = {
+      ...item,
+      origin: "conflict",
+      originalText: item.text,
+      proposedRewrite: raw.text,
+      citations,
+      modelPlaced: true,
+      reviewState: "unresolved",
+    };
+  }
+
+  // For each accepted addition op, insert new blocks
   const insertions: Array<{
     afterStudentNoteId: string | null;
     afterWindowId: string | null;
@@ -447,10 +564,6 @@ export async function mergeLecture(
     const hasValidSources = raw.sourceIds.some((sid) => validSourceIds.has(sid));
     if (!isValidTarget || !hasValidSources) continue;
 
-    // Find if it was dropped
-    // Check answeredEntries — if its sources are in answeredEntries indirectly; simpler: check DB
-    // For simplicity, re-check the logic: an op is accepted if no dropReason was set
-    // We need to re-derive that. Let's just use the same validation logic:
     let dropReason: string | null = null;
     if (raw.type === "add_after" && !validBlockIds.has(raw.blockId)) {
       dropReason = "invalid";
@@ -458,7 +571,10 @@ export async function mergeLecture(
       dropReason = "invalid";
     }
     for (const sid of raw.sourceIds) {
-      if (!validSourceIds.has(sid)) { dropReason = "invalid"; break; }
+      if (!validSourceIds.has(sid)) {
+        dropReason = "invalid";
+        break;
+      }
     }
     if (dropReason) continue;
 
@@ -484,6 +600,8 @@ export async function mergeLecture(
       windowId: raw.type === "add_at_window" ? raw.windowId : null,
       noteId: null,
       text: raw.text,
+      originalText: null,
+      proposedRewrite: null,
       citations,
       modelPlaced: true,
       reviewState: "kept",
@@ -498,7 +616,6 @@ export async function mergeLecture(
   }
 
   // Apply insertions to mergedList
-  // Process from end to start to keep indices valid for add_after
   // First do add_after insertions
   for (const ins of insertions.filter((i) => i.afterStudentNoteId !== null)) {
     const targetIdx = mergedList.findIndex(
@@ -520,9 +637,41 @@ export async function mergeLecture(
     mergedList.splice(insertAfter + 1, 0, ins.item);
   }
 
-  // Add fallback blocks for unanswered entries
+  // Add fallback blocks/flags for unanswered entries
   for (const entry of editList) {
-    if (!answeredEntries.has(entry.id)) {
+    if (answeredEntries.has(entry.id)) continue;
+
+    if (entry.type === "conflict" && entry.noteId) {
+      // Fallback: flag the student block as a conflict with no model-placed rewrite
+      const targetIdx = mergedList.findIndex(
+        (b) => b.origin === "student" && b.noteId === entry.noteId,
+      );
+      if (targetIdx !== -1) {
+        const item = mergedList[targetIdx]!;
+        const citations: Citation[] = entry.sourceIds.map((sid) => {
+          const kind: "slide" | "transcript" = sid.startsWith("S") ? "slide" : "transcript";
+          let text = "";
+          if (kind === "slide") {
+            const slideId = sid.split("-B")[0];
+            if (slideId) {
+              const slide = slideMap.get(slideId);
+              text = slide?.bullets.find((b) => b.id === sid)?.text ?? "";
+            }
+          }
+          return { sourceId: sid, kind, text };
+        });
+        mergedList[targetIdx] = {
+          ...item,
+          origin: "conflict",
+          originalText: item.text,
+          proposedRewrite: null,
+          citations,
+          modelPlaced: false,
+          reviewState: "unresolved",
+        };
+      }
+    } else if (entry.type !== "conflict") {
+      // Fallback for missing/partial entries: verbatim addition block
       const citations: Citation[] = entry.sourceIds.map((sid) => ({
         sourceId: sid,
         kind: (sid.startsWith("S") ? "slide" : "transcript") as "slide" | "transcript",
@@ -535,6 +684,8 @@ export async function mergeLecture(
         windowId: entry.windowId,
         noteId: null,
         text: entry.sourceText,
+        originalText: null,
+        proposedRewrite: null,
         citations,
         modelPlaced: false,
         reviewState: "kept",
@@ -558,8 +709,8 @@ export async function mergeLecture(
       origin: item.origin as MergedBlock["origin"],
       noteId: item.noteId,
       text: item.text,
-      originalText: null,
-      proposedRewrite: null,
+      originalText: item.originalText,
+      proposedRewrite: item.proposedRewrite,
       citations: item.citations,
       modelPlaced: item.modelPlaced,
       reviewState: item.reviewState as MergedBlock["reviewState"],

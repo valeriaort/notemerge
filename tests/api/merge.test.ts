@@ -526,3 +526,176 @@ describe("Merge verdict → merged note", () => {
     expect(nonStudent[0]!.citations[0]!.sourceId).toBe("S001-B01");
   });
 });
+
+describe("Conflict check → yellow flags", () => {
+  it("scripted conflict verdict produces a yellow block with citations and proposed rewrite", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "El corazón tiene 3 ventrículos", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Conflict verdict for B01 (conflict key = conflict:B01)
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.97 },
+    });
+
+    // Haiku returns a rewrite targeting B01 with source S001-B01
+    writingModel.setOperations([
+      {
+        type: "rewrite",
+        blockId: "B01",
+        text: "El corazón tiene 4 ventrículos.",
+        sourceIds: ["S001-B01"],
+      },
+    ]);
+
+    const { status, body } = await postMerge(server.url, lecture.id);
+    expect(status).toBe(201);
+    const resp = body as MergeResponse;
+
+    const conflictBlocks = resp.mergedNote.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(1);
+
+    const flag = conflictBlocks[0]!;
+    // Original text is preserved
+    expect(flag.text).toBe("El corazón tiene 3 ventrículos");
+    // Rewrite is stored alongside
+    expect(flag.proposedRewrite).toBe("El corazón tiene 4 ventrículos.");
+    // Unresolved by default
+    expect(flag.reviewState).toBe("unresolved");
+    // Citations name the conflicting source
+    expect(flag.citations).toHaveLength(1);
+    expect(flag.citations[0]!.sourceId).toBe("S001-B01");
+    expect(flag.citations[0]!.kind).toBe("slide");
+    expect(flag.citations[0]!.text).toBe("Important fact about anatomy");
+    // Placed by the model
+    expect(flag.modelPlaced).toBe(true);
+  });
+
+  it("conflict question key is conflict:<blockId>", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "some note text", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Only fires when the key is exactly "conflict:B01"
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.95 },
+    });
+    writingModel.setOperations([
+      {
+        type: "rewrite",
+        blockId: "B01",
+        text: "Rewritten text.",
+        sourceIds: ["S001-B01"],
+      },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const conflictBlocks = blocks.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(1);
+  });
+
+  it("supported verdict produces no conflict flag", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "El corazón tiene 4 ventrículos", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Default: supported — no conflict
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "supported", probability: 0.99 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const conflictBlocks = blocks.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(0);
+  });
+
+  it("unsupported verdict produces no conflict flag (only conflicts are flagged)", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "some unrelated note", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "unsupported", probability: 0.98 },
+    });
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const conflictBlocks = blocks.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(0);
+  });
+
+  it("conflict fallback: no rewrite op produces a conflict block with modelPlaced=false", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "original text", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.96 },
+    });
+    // Haiku returns nothing — fallback path
+    writingModel.setOperations([]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const conflictBlocks = blocks.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(1);
+    const flag = conflictBlocks[0]!;
+    expect(flag.modelPlaced).toBe(false);
+    expect(flag.text).toBe("original text");
+    expect(flag.reviewState).toBe("unresolved");
+    expect(flag.citations.length).toBeGreaterThan(0);
+  });
+
+  it("each block is checked at most once (in its own window only)", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    // Two blocks both in the same window
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "Note one" }], children: [] },
+        { id: "B02", type: "paragraph", content: [{ type: "text", text: "Note two" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 5 * 60 * 1000 },
+        B02: { firstEditTime: t + 1000, lastEditTime: t + 6 * 60 * 1000 },
+      },
+    };
+    await putNotes(server.url, lecture.id, notes);
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    // Both blocks conflict — should each be flagged exactly once
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.96 },
+      "conflict:B02": { label: "conflicts", probability: 0.94 },
+    });
+    writingModel.setOperations([
+      { type: "rewrite", blockId: "B01", text: "Rewrite one.", sourceIds: ["S001-B01"] },
+      { type: "rewrite", blockId: "B02", text: "Rewrite two.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    // Each block flagged exactly once
+    expect(blocks.filter((b) => b.noteId === "B01" && b.origin === "conflict")).toHaveLength(1);
+    expect(blocks.filter((b) => b.noteId === "B02" && b.origin === "conflict")).toHaveLength(1);
+  });
+});
