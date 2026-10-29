@@ -368,7 +368,7 @@ describe("Merge verdict → merged note", () => {
     expect(addition.text).toBe("La hematología estudia la sangre.");
     expect(addition.citations[0]!.sourceId).toBe("S001-B01");
     expect(addition.modelPlaced).toBe(true);
-    expect(addition.reviewState).toBe("kept");
+    expect(addition.reviewState).toBeNull();
   });
 
   it("sealed notes are unchanged after merge", async () => {
@@ -464,7 +464,7 @@ describe("Merge verdict → merged note", () => {
     expect(pf.text).toBe("Gasto cardíaco: 5 L/min en reposo.");
     expect(pf.citations[0]!.sourceId).toBe("S001-B01");
     expect(pf.modelPlaced).toBe(true);
-    expect(pf.reviewState).toBe("kept");
+    expect(pf.reviewState).toBeNull();
   });
 
   it("partially_covered entry carries retrieved note block IDs", async () => {

@@ -1119,3 +1119,49 @@ export function listMergedBlocks(
     .all(mergeRunId) as MergedBlockRow[];
   return rows.map(rowToMergedBlock);
 }
+
+export function getMergedBlock(
+  db: Database.Database,
+  blockId: string,
+): MergedBlock | undefined {
+  const row = db.prepare("SELECT * FROM merged_blocks WHERE id = ?").get(blockId) as MergedBlockRow | undefined;
+  return row ? rowToMergedBlock(row) : undefined;
+}
+
+export function updateMergedBlockReviewState(
+  db: Database.Database,
+  blockId: string,
+  reviewState: string,
+): MergedBlock | undefined {
+  db.prepare("UPDATE merged_blocks SET review_state = ? WHERE id = ?").run(reviewState, blockId);
+  return getMergedBlock(db, blockId);
+}
+
+export function hasReviewDecision(
+  db: Database.Database,
+  lectureId: string,
+): boolean {
+  const row = db.prepare(
+    `SELECT 1 FROM merged_blocks mb
+     JOIN merge_runs mr ON mb.merge_run_id = mr.id
+     WHERE mr.lecture_id = ? AND mb.review_state IS NOT NULL
+     LIMIT 1`,
+  ).get(lectureId);
+  return row !== undefined;
+}
+
+export function getAudioFileById(
+  db: Database.Database,
+  id: string,
+): AudioFile | undefined {
+  const row = db.prepare("SELECT * FROM audio_files WHERE id = ?").get(id) as AudioFileRow | undefined;
+  return row ? rowToAudioFile(row) : undefined;
+}
+
+export function updateAudioFileRecordingStart(
+  db: Database.Database,
+  id: string,
+  recordingStartMs: number,
+): void {
+  db.prepare("UPDATE audio_files SET recording_start_ms = ? WHERE id = ?").run(recordingStartMs, id);
+}

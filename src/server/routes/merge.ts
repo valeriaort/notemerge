@@ -3,7 +3,14 @@ import type { Request, Response } from "express";
 import type Database from "better-sqlite3";
 import type { Providers } from "../../providers/interfaces.js";
 import type { Config } from "../config.js";
-import { getLecture, getMergeRunByLectureId, listMergedBlocks } from "../db.js";
+import {
+  getLecture,
+  getMergeRunByLectureId,
+  listMergedBlocks,
+  getMergedBlock,
+  updateMergedBlockReviewState,
+} from "../db.js";
+import type { MergedBlockReviewState } from "../../shared/types.js";
 import { mergeLecture } from "../mergeLecture.js";
 import { strings } from "../../shared/strings.js";
 
@@ -81,6 +88,30 @@ export function mergeRoutes(
 
     const blocks = listMergedBlocks(db, mergeRun.id);
     res.json({ blocks });
+  });
+
+  router.patch("/:lectureId/merged-note/:blockId", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["lectureId"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+
+    const { reviewState } = req.body as { reviewState?: unknown };
+    const VALID_STATES: MergedBlockReviewState[] = ["kept", "reverted", "unresolved", "edited"];
+    if (typeof reviewState !== "string" || !VALID_STATES.includes(reviewState as MergedBlockReviewState)) {
+      res.status(400).json({ error: "Invalid reviewState. Must be one of: kept, reverted, unresolved, edited." });
+      return;
+    }
+
+    const existing = getMergedBlock(db, req.params["blockId"]!);
+    if (!existing) {
+      res.status(404).json({ error: "Block not found." });
+      return;
+    }
+
+    const updated = updateMergedBlockReviewState(db, req.params["blockId"]!, reviewState);
+    res.json({ block: updated });
   });
 
   return router;
