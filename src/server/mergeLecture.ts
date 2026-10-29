@@ -378,13 +378,56 @@ export async function mergeLecture(
     retrievedNoteIds: e.retrievedNoteIds,
   }));
 
+  const haikuTokenThreshold = config.haikuTokenThreshold ?? 100000;
+  const haikuInput = { sealedNotes, windowRanges, editList: haikuEditList };
+
   let rawOps: WritingOperation[] = [];
   if (editList.length > 0) {
-    rawOps = await providers.writingModel.generateOperations({
-      sealedNotes,
-      windowRanges,
-      editList: haikuEditList,
-    });
+    const estimatedTokens = JSON.stringify(haikuInput).length / 4;
+    if (estimatedTokens > haikuTokenThreshold && windows.length > 1) {
+      // Split at window boundary: first half → call 1, second half → call 2
+      const midIdx = Math.floor(windows.length / 2);
+      const firstHalfIds = new Set(windows.slice(0, midIdx).map((w) => w.id));
+
+      const editListFirst = haikuEditList.filter((e) => firstHalfIds.has(e.windowId));
+      const editListSecond = haikuEditList.filter((e) => !firstHalfIds.has(e.windowId));
+
+      const sealedFirst = sealedNotes.filter((n) => {
+        const meta = notesData.meta[n.id];
+        if (!meta?.firstEditTime) return true;
+        const win = findWindowForBlock(meta.firstEditTime, windows);
+        return !win || firstHalfIds.has(win.id);
+      });
+      const sealedSecond = sealedNotes.filter((n) => {
+        const meta = notesData.meta[n.id];
+        if (!meta?.firstEditTime) return false;
+        const win = findWindowForBlock(meta.firstEditTime, windows);
+        return win !== undefined && !firstHalfIds.has(win.id);
+      });
+
+      const windowRangesFirst = windowRanges.filter((w) => firstHalfIds.has(w.windowId));
+      const windowRangesSecond = windowRanges.filter((w) => !firstHalfIds.has(w.windowId));
+
+      const ops1 =
+        editListFirst.length > 0
+          ? await providers.writingModel.generateOperations({
+              sealedNotes: sealedFirst,
+              windowRanges: windowRangesFirst,
+              editList: editListFirst,
+            })
+          : [];
+      const ops2 =
+        editListSecond.length > 0
+          ? await providers.writingModel.generateOperations({
+              sealedNotes: sealedSecond,
+              windowRanges: windowRangesSecond,
+              editList: editListSecond,
+            })
+          : [];
+      rawOps = [...ops1, ...ops2];
+    } else {
+      rawOps = await providers.writingModel.generateOperations(haikuInput);
+    }
   }
 
   // Validate operations
@@ -393,10 +436,12 @@ export async function mergeLecture(
   const entryById = new Map(editList.map((e) => [e.id, e]));
   const validSourceIds = new Set(editList.flatMap((e) => e.sourceIds));
 
-  // Track which entries get answered (for fallback detection)
+  // Track which entries get answered (for fallback detection) and which op indices are accepted
   const answeredEntries = new Set<string>();
+  const acceptedOpIndices = new Set<number>();
 
-  for (const op of rawOps) {
+  for (let opIdx = 0; opIdx < rawOps.length; opIdx++) {
+    const op = rawOps[opIdx]!;
     let dropReason: string | null = null;
 
     if (op.type === "add_after") {
@@ -466,6 +511,7 @@ export async function mergeLecture(
 
     if (status === "accepted" && entryId) {
       answeredEntries.add(entryId);
+      acceptedOpIndices.add(opIdx);
     }
   }
 
@@ -497,23 +543,10 @@ export async function mergeLecture(
   }
 
   // For each accepted rewrite op, mark the student block as a conflict block
-  for (const raw of rawOps) {
+  for (let opIdx = 0; opIdx < rawOps.length; opIdx++) {
+    const raw = rawOps[opIdx]!;
     if (raw.type !== "rewrite") continue;
-    if (!validBlockIds.has(raw.blockId)) continue;
-    let hasValidSources = true;
-    for (const sid of raw.sourceIds) {
-      if (!validSourceIds.has(sid)) {
-        hasValidSources = false;
-        break;
-      }
-    }
-    if (!hasValidSources) continue;
-
-    // Only process if the corresponding conflict entry was answered
-    const conflictEntry = editList.find(
-      (e) => e.type === "conflict" && e.noteId === raw.blockId,
-    );
-    if (!conflictEntry || !answeredEntries.has(conflictEntry.id)) continue;
+    if (!acceptedOpIndices.has(opIdx)) continue;
 
     const targetIdx = mergedList.findIndex(
       (b) => b.origin === "student" && b.noteId === raw.blockId,
@@ -554,29 +587,10 @@ export async function mergeLecture(
     item: MergedListItem;
   }> = [];
 
-  for (const raw of rawOps) {
+  for (let opIdx = 0; opIdx < rawOps.length; opIdx++) {
+    const raw = rawOps[opIdx]!;
     if (raw.type !== "add_after" && raw.type !== "add_at_window") continue;
-
-    // Check if this was accepted (not dropped)
-    const opTarget = raw.type === "add_after" ? raw.blockId : raw.windowId;
-    const isValidTarget =
-      raw.type === "add_after" ? validBlockIds.has(opTarget) : validWindowIds.has(opTarget);
-    const hasValidSources = raw.sourceIds.some((sid) => validSourceIds.has(sid));
-    if (!isValidTarget || !hasValidSources) continue;
-
-    let dropReason: string | null = null;
-    if (raw.type === "add_after" && !validBlockIds.has(raw.blockId)) {
-      dropReason = "invalid";
-    } else if (raw.type === "add_at_window" && !validWindowIds.has(raw.windowId)) {
-      dropReason = "invalid";
-    }
-    for (const sid of raw.sourceIds) {
-      if (!validSourceIds.has(sid)) {
-        dropReason = "invalid";
-        break;
-      }
-    }
-    if (dropReason) continue;
+    if (!acceptedOpIndices.has(opIdx)) continue;
 
     // Build citations from sourceIds
     const citations: Citation[] = raw.sourceIds.map((sid) => {

@@ -5,18 +5,14 @@ import type { TestServer } from "./helpers.js";
 import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
 import { ScriptedClassifier, ScriptedWritingModel } from "../../src/providers/fakes.js";
 
-// Builds a minimal valid PDF with a title and one bullet per page
-function buildOneSlidePdf(title: string, bulletText: string): Buffer {
-  // Single page: title at y=720 (largest font), bullet at y=670
-  // Bullet starts with "- " to trigger the bullet glyph rule
-  const pages = [
-    {
-      texts: [
-        { text: title, y: 720, size: 24 },
-        { text: `- ${bulletText}`, y: 670, size: 12 },
-      ],
-    },
-  ];
+// Builds a minimal valid PDF with one title and one bullet per slide
+function buildSlidePdf(slides: Array<{ title: string; bullet: string }>): Buffer {
+  const pages = slides.map((s) => ({
+    texts: [
+      { text: s.title, y: 720, size: 24 },
+      { text: `- ${s.bullet}`, y: 670, size: 12 },
+    ],
+  }));
 
   const n = pages.length;
   const numObjs = 3 + n * 2;
@@ -56,7 +52,11 @@ function buildOneSlidePdf(title: string, bulletText: string): Buffer {
   return Buffer.from(pdf, "binary");
 }
 
-const SLIDE_PDF = buildOneSlidePdf("Slide Title", "Important fact about anatomy");
+const SLIDE_PDF = buildSlidePdf([{ title: "Slide Title", bullet: "Important fact about anatomy" }]);
+const TWO_SLIDE_PDF = buildSlidePdf([
+  { title: "Slide One", bullet: "First slide fact" },
+  { title: "Slide Two", bullet: "Second slide fact" },
+]);
 
 type MergeResponse = { mergeRun: MergeRun; mergedNote: MergedBlock[] };
 type MergedNoteResponse = { blocks: MergedBlock[] };
@@ -697,5 +697,203 @@ describe("Conflict check → yellow flags", () => {
     // Each block flagged exactly once
     expect(blocks.filter((b) => b.noteId === "B01" && b.origin === "conflict")).toHaveLength(1);
     expect(blocks.filter((b) => b.noteId === "B02" && b.origin === "conflict")).toHaveLength(1);
+  });
+});
+
+describe("Haiku output validation", () => {
+  it("unknown blockId in add_after is dropped; fallback block appears with verbatim source text", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Haiku references a block that does not exist
+    writingModel.setOperations([
+      { type: "add_after", blockId: "NONEXISTENT-BLOCK", text: "El corazón.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    // No model-placed addition
+    expect(blocks.filter((b) => b.origin === "addition" && b.modelPlaced)).toHaveLength(0);
+    // Fallback block with verbatim source text and citation
+    const fallbacks = blocks.filter((b) => b.origin === "fallback");
+    expect(fallbacks).toHaveLength(1);
+    expect(fallbacks[0]!.modelPlaced).toBe(false);
+    expect(fallbacks[0]!.citations[0]!.sourceId).toBe("S001-B01");
+  });
+
+  it("unknown windowId in add_at_window is dropped; fallback block appears", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Haiku references a window that does not exist
+    writingModel.setOperations([
+      { type: "add_at_window", windowId: "W999", text: "El corazón.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    expect(blocks.filter((b) => b.origin === "addition" && b.modelPlaced)).toHaveLength(0);
+    const fallbacks = blocks.filter((b) => b.origin === "fallback");
+    expect(fallbacks).toHaveLength(1);
+    expect(fallbacks[0]!.modelPlaced).toBe(false);
+  });
+
+  it("source ID outside the edit list is dropped; unanswered entry produces fallback block", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Haiku returns a source ID that is not in the edit list
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "El corazón.", sourceIds: ["S999-B99"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    expect(blocks.filter((b) => b.origin === "addition" && b.modelPlaced)).toHaveLength(0);
+    const fallbacks = blocks.filter((b) => b.origin === "fallback");
+    expect(fallbacks).toHaveLength(1);
+    expect(fallbacks[0]!.citations[0]!.sourceId).toBe("S001-B01");
+  });
+
+  it("entry answered multiple times: only first operation accepted, second dropped", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    // Two operations for the same entry (same sourceId → same edit list entry)
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "First answer.", sourceIds: ["S001-B01"] },
+      { type: "add_at_window", windowId: "W001", text: "Second answer.", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    // Exactly one non-student block (first op accepted, second dropped)
+    const nonStudent = blocks.filter((b) => b.origin !== "student");
+    expect(nonStudent).toHaveLength(1);
+    expect(nonStudent[0]!.origin).toBe("addition");
+    expect(nonStudent[0]!.text).toBe("First answer.");
+    expect(nonStudent[0]!.modelPlaced).toBe(true);
+  });
+
+  it("Haiku is not retried when it returns invalid operations", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    writingModel.setOperations([
+      { type: "add_after", blockId: "NONEXISTENT", text: "text", sourceIds: ["S001-B01"] },
+    ]);
+
+    const { status } = await postMerge(server.url, lecture.id);
+    expect(status).toBe(201);
+    // Haiku called exactly once — no retry on invalid output
+    expect(writingModel.callCount).toBe(1);
+  });
+
+  it("dropped rewrite op for a conflict entry → conflict flag still appears with modelPlaced=false", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "original text", t));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.96 },
+    });
+    // Rewrite targets a non-existent block → dropped
+    writingModel.setOperations([
+      { type: "rewrite", blockId: "NONEXISTENT", text: "rewrite text", sourceIds: ["S001-B01"] },
+    ]);
+
+    await postMerge(server.url, lecture.id);
+
+    const { body } = await getMergedNote(server.url, lecture.id);
+    const blocks = (body as MergedNoteResponse).blocks;
+    const conflictBlocks = blocks.filter((b) => b.origin === "conflict");
+    expect(conflictBlocks).toHaveLength(1);
+    const flag = conflictBlocks[0]!;
+    expect(flag.modelPlaced).toBe(false);
+    expect(flag.proposedRewrite).toBeNull();
+    expect(flag.reviewState).toBe("unresolved");
+    expect(flag.citations.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Haiku split above 100k tokens", () => {
+  let splitServer: TestServer;
+  let splitClassifier: ScriptedClassifier;
+  let splitWritingModel: ScriptedWritingModel;
+
+  beforeEach(async () => {
+    splitClassifier = new ScriptedClassifier();
+    splitWritingModel = new ScriptedWritingModel();
+    // Threshold of 1 forces a split whenever windows.length > 1
+    splitServer = await startTestServer(
+      { classifier: splitClassifier, writingModel: splitWritingModel },
+      { haikuTokenThreshold: 1 },
+    );
+  });
+
+  afterEach(() => {
+    splitServer.close();
+  });
+
+  it("makes two Haiku calls when estimated tokens exceed threshold with multiple windows", async () => {
+    const t = Date.now();
+    const lecture = await createLecture(splitServer.url);
+    // lastEditTime 6 minutes after firstEditTime → 4-minute fixed windows → two windows
+    const notes = {
+      blocks: [
+        { id: "B01", type: "paragraph", content: [{ type: "text", text: "First block" }], children: [] },
+      ],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t + 6 * 60 * 1000 },
+      },
+    };
+    await putNotes(splitServer.url, lecture.id, notes);
+    await sealWithPdf(splitServer.url, lecture.id, TWO_SLIDE_PDF);
+
+    // Script missing for both slide bullets (one per window)
+    splitClassifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+      "coverage:S002-B01": { label: "missing", probability: 0.98 },
+    });
+    splitWritingModel.setOperations([]);
+
+    const { status } = await postMerge(splitServer.url, lecture.id);
+    expect(status).toBe(201);
+    // Two separate Haiku calls (one per half)
+    expect(splitWritingModel.callCount).toBe(2);
   });
 });
