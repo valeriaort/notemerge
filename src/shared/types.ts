@@ -72,7 +72,9 @@ export interface Sentence {
   id: string;
   chunkId: string;
   audioStartOffsetMs: number;
+  audioEndOffsetMs: number;
   clockStartTimeMs: number;
+  clockEndTimeMs: number;
   textRaw: string;
   text: string;
   avgLogprob: number;

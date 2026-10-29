@@ -347,6 +347,8 @@ describe("stage and persistence", () => {
 
   it("sentences are persisted with textRaw, text, status and flagState", async () => {
     const speechToText = new ScriptedSpeechToText();
+    // Use "Contenido del audio." but put those terms in the notes so they are
+    // known and do not trigger the unrecognized-medical-term flag.
     speechToText.setDefaultSegments([
       { startMs: 1000, endMs: 3000, text: "Contenido del audio.", avgLogprob: -0.5, noSpeechProb: 0.1, compressionRatio: 1.0 },
     ]);
@@ -355,7 +357,8 @@ describe("stage and persistence", () => {
 
     const lecture = await createLecture();
     const subject = await createSubject("Test");
-    await putNotes(lecture.id, notesWithNoBlockInRange());
+    // Notes contain the sentence's terms so they are in the mini glossary
+    await putNotes(lecture.id, notesWithBlockInRange("Contenido del audio."));
     await uploadAudio(lecture.id, subject.id, RECORDING_START);
 
     await triggerTranscription(lecture.id);
@@ -371,5 +374,410 @@ describe("stage and persistence", () => {
     expect(s.flagState).toBe("unflagged");
     expect(s.stitchedInto).toBeNull();
     expect(s.correctedText).toBeNull();
+  }, TEST_TIMEOUT);
+});
+
+// ── Transcript clean-up: stitching ────────────────────────────────────────────
+
+// Multi-chunk tests use a very short chunk target (3 s) so that a 10 s audio
+// file is split into several chunks by ffmpeg. Chunk paths are read from the
+// DB after upload so the ScriptedSpeechToText fake can be keyed by path.
+
+describe("transcript stitching across chunk boundaries", () => {
+  let speechToText: ScriptedSpeechToText;
+
+  beforeEach(async () => {
+    speechToText = new ScriptedSpeechToText();
+    server = await startTestServer({ speechToText }, { chunkTargetMs: 3000 });
+  });
+
+  afterEach(() => server.close());
+
+  it("stitches when last sentence lacks terminal punct and next starts lowercase", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    // Query chunk paths in order so we can script each one
+    const chunkRows = server.db
+      .prepare<[], { file_path: string }>(
+        `SELECT ac.file_path FROM audio_chunks ac
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY ac.chunk_index`,
+      )
+      .all(lecture.id);
+
+    expect(chunkRows.length).toBeGreaterThan(1);
+
+    // Chunk 0: last sentence has no terminal punctuation
+    speechToText.setSegments(chunkRows[0]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "Primera parte de la oración", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    // Chunk 1: first sentence starts lowercase → should be stitched into chunk 0's sentence
+    speechToText.setSegments(chunkRows[1]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "que continúa aquí.", avgLogprob: -0.5, noSpeechProb: 0.2, compressionRatio: 1.8 },
+    ]);
+    // Remaining chunks return nothing
+    for (let i = 2; i < chunkRows.length; i++) {
+      speechToText.setSegments(chunkRows[i]!.file_path, []);
+    }
+
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    const retired = sentBody.sentences.filter((s) => s.status === "retired" && s.stitchedInto !== null);
+
+    // One active stitched sentence, one retired
+    expect(active).toHaveLength(1);
+    expect(retired).toHaveLength(1);
+
+    const stitched = active[0]!;
+    // Keeps the earlier ID (A01-T0001)
+    expect(stitched.id).toBe("A01-T0001");
+    // Text is the joined result
+    expect(stitched.text).toBe("Primera parte de la oración que continúa aquí.");
+    // clockStartTimeMs comes from the first sentence
+    expect(stitched.clockStartTimeMs).toBe(RECORDING_START + 0);
+    // audioEndOffsetMs covers the second sentence's end
+    expect(stitched.audioEndOffsetMs).toBe(1500);
+    // Metrics are worst-of: min avgLogprob, max noSpeechProb, max compressionRatio
+    expect(stitched.avgLogprob).toBeCloseTo(-0.5);
+    expect(stitched.noSpeechProb).toBeCloseTo(0.2);
+    expect(stitched.compressionRatio).toBeCloseTo(1.8);
+
+    // Retired sentence points back to the kept sentence
+    expect(retired[0]!.stitchedInto).toBe("A01-T0001");
+  }, TEST_TIMEOUT);
+
+  it("does not stitch when last sentence has terminal punctuation", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db
+      .prepare<[], { file_path: string }>(
+        `SELECT ac.file_path FROM audio_chunks ac
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY ac.chunk_index`,
+      )
+      .all(lecture.id);
+
+    expect(chunkRows.length).toBeGreaterThan(1);
+
+    speechToText.setSegments(chunkRows[0]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "Primera oración completa.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    speechToText.setSegments(chunkRows[1]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "segunda oración.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    for (let i = 2; i < chunkRows.length; i++) {
+      speechToText.setSegments(chunkRows[i]!.file_path, []);
+    }
+
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    // No stitch → both sentences remain active
+    expect(active).toHaveLength(2);
+  }, TEST_TIMEOUT);
+
+  it("does not stitch when next sentence starts uppercase", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db
+      .prepare<[], { file_path: string }>(
+        `SELECT ac.file_path FROM audio_chunks ac
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY ac.chunk_index`,
+      )
+      .all(lecture.id);
+
+    expect(chunkRows.length).toBeGreaterThan(1);
+
+    speechToText.setSegments(chunkRows[0]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "Primera parte sin punto", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    speechToText.setSegments(chunkRows[1]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "Segunda parte con mayúscula.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    for (let i = 2; i < chunkRows.length; i++) {
+      speechToText.setSegments(chunkRows[i]!.file_path, []);
+    }
+
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    // No stitch → both sentences remain active (uppercase start)
+    expect(active).toHaveLength(2);
+  }, TEST_TIMEOUT);
+});
+
+// ── Transcript clean-up: filler removal ──────────────────────────────────────
+
+describe("transcript filler removal", () => {
+  let speechToText: ScriptedSpeechToText;
+
+  beforeEach(async () => {
+    speechToText = new ScriptedSpeechToText();
+    server = await startTestServer({ speechToText });
+  });
+
+  afterEach(() => server.close());
+
+  it("removes '¿ya lo tenéis?' as filler", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "¿ya lo tenéis?", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    expect(active).toHaveLength(0);
+
+    const retired = sentBody.sentences.filter((s) => s.status === "retired");
+    expect(retired).toHaveLength(1);
+  }, TEST_TIMEOUT);
+
+  it("removes '¿ya está copiado?' as filler", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "¿ya está copiado?", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    expect(active).toHaveLength(0);
+  }, TEST_TIMEOUT);
+});
+
+// ── Transcript clean-up: flagging ────────────────────────────────────────────
+
+describe("transcript flagging", () => {
+  let speechToText: ScriptedSpeechToText;
+
+  beforeEach(async () => {
+    speechToText = new ScriptedSpeechToText();
+    server = await startTestServer({ speechToText });
+  });
+
+  afterEach(() => server.close());
+
+  it("flags sentence when avg_logprob < -1.0", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "Algo dicho.", avgLogprob: -1.5, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const s = sentBody.sentences[0]!;
+    expect(s.flagState).toBe("flagged_unhandled");
+    expect((s.flagReasons as string[])).toContain("avg_logprob");
+  }, TEST_TIMEOUT);
+
+  it("flags sentence when no_speech_prob > 0.6", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "Algo dicho.", avgLogprob: -0.3, noSpeechProb: 0.7, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const s = sentBody.sentences[0]!;
+    expect(s.flagState).toBe("flagged_unhandled");
+    expect((s.flagReasons as string[])).toContain("no_speech_prob");
+  }, TEST_TIMEOUT);
+
+  it("flags sentence when compression_ratio > 2.4", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "Algo dicho.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 2.5 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const s = sentBody.sentences[0]!;
+    expect(s.flagState).toBe("flagged_unhandled");
+    expect((s.flagReasons as string[])).toContain("compression_ratio");
+  }, TEST_TIMEOUT);
+
+  it("flags sentence containing a medical-looking term absent from mini glossary", async () => {
+    // "periodontitis" is medical-looking; no notes in range → empty mini glossary
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 1000, text: "El paciente tiene periodontitis.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const s = sentBody.sentences[0]!;
+    expect(s.flagState).toBe("flagged_unhandled");
+    expect((s.flagReasons as string[])).toContain("unrecognized_medical_term");
+  }, TEST_TIMEOUT);
+
+  it("does not flag sentence when medical term is in the mini glossary", async () => {
+    // "cóndilo" is medical-looking; notes in range contain it → it is known
+    speechToText.setDefaultSegments([
+      { startMs: 1000, endMs: 3000, text: "El cóndilo es importante.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    // Notes contain "cóndilo" so it lands in the mini glossary
+    await putNotes(lecture.id, notesWithBlockInRange("cóndilo mandibular"));
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    const s = sentBody.sentences[0]!;
+    expect(s.flagState).toBe("unflagged");
+  }, TEST_TIMEOUT);
+});
+
+// ── Transcript clean-up: ordering (stitch → filler → flag) ───────────────────
+
+describe("transcript cleanup ordering", () => {
+  let speechToText: ScriptedSpeechToText;
+
+  beforeEach(async () => {
+    speechToText = new ScriptedSpeechToText();
+    server = await startTestServer({ speechToText }, { chunkTargetMs: 3000 });
+  });
+
+  afterEach(() => server.close());
+
+  it("stitches across boundary first, then filler removes the combined sentence", async () => {
+    // Split filler phrase across two chunks: "¿ya lo" / "tenéis?"
+    // Stitching must run before filler so the combined text is matched.
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db
+      .prepare<[], { file_path: string }>(
+        `SELECT ac.file_path FROM audio_chunks ac
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY ac.chunk_index`,
+      )
+      .all(lecture.id);
+
+    expect(chunkRows.length).toBeGreaterThan(1);
+
+    speechToText.setSegments(chunkRows[0]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "¿ya lo", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    speechToText.setSegments(chunkRows[1]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "tenéis?", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    for (let i = 2; i < chunkRows.length; i++) {
+      speechToText.setSegments(chunkRows[i]!.file_path, []);
+    }
+
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+
+    // No active sentences: stitched result "¿ya lo tenéis?" was removed as filler
+    const active = sentBody.sentences.filter((s) => s.status === "active");
+    expect(active).toHaveLength(0);
+
+    // Both sentences retired (chunk 2's by stitching, chunk 1's by filler)
+    expect(sentBody.sentences.filter((s) => s.status === "retired")).toHaveLength(2);
+  }, TEST_TIMEOUT);
+
+  it("retired sentences from stitching are not additionally flagged", async () => {
+    // The sentence that gets retired by stitching should not get flagState = flagged_unhandled
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db
+      .prepare<[], { file_path: string }>(
+        `SELECT ac.file_path FROM audio_chunks ac
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY ac.chunk_index`,
+      )
+      .all(lecture.id);
+
+    expect(chunkRows.length).toBeGreaterThan(1);
+
+    // Chunk 0: ends without terminal punct
+    speechToText.setSegments(chunkRows[0]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "Primera parte", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    // Chunk 1: starts lowercase, bad metrics that would normally trigger flagging
+    speechToText.setSegments(chunkRows[1]!.file_path, [
+      { startMs: 0, endMs: 1500, text: "segunda parte.", avgLogprob: -2.0, noSpeechProb: 0.8, compressionRatio: 3.0 },
+    ]);
+    for (let i = 2; i < chunkRows.length; i++) {
+      speechToText.setSegments(chunkRows[i]!.file_path, []);
+    }
+
+    await triggerTranscription(lecture.id);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+
+    const stitchedRetired = sentBody.sentences.find(
+      (s) => s.status === "retired" && s.stitchedInto !== null,
+    );
+    expect(stitchedRetired).toBeDefined();
+    // The retired-by-stitching sentence is never flagged (flagging only runs on active)
+    expect(stitchedRetired!.flagState).toBe("unflagged");
   }, TEST_TIMEOUT);
 });

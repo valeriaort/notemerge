@@ -14,6 +14,7 @@ import { windowRoutes } from "./routes/windows.js";
 import { mergeRoutes } from "./routes/merge.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
 import { config } from "./config.js";
+import type { Config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,18 +22,20 @@ export function createApp(
   db: Database.Database,
   dataDir: string,
   _providers: Providers,
+  cfgOverride: Partial<Config> = {},
 ) {
+  const cfg = { ...config, ...cfgOverride };
   const app = express();
 
   app.use(express.json());
 
   app.use("/api/lectures", lectureRoutes(db, dataDir));
   app.use("/api/lectures", markerRoutes(db));
-  app.use("/api/lectures", audioSourcesRoutes(db, dataDir));
+  app.use("/api/lectures", audioSourcesRoutes(db, dataDir, cfg.chunkTargetMs ?? 120000));
   app.use("/api/lectures", abbreviationLectureRoutes(db));
   app.use("/api/lectures", windowRoutes(db));
-  app.use("/api/lectures", mergeRoutes(db, _providers, config));
-  app.use("/api/lectures", transcriptionRoutes(db, _providers, config));
+  app.use("/api/lectures", mergeRoutes(db, _providers, cfg));
+  app.use("/api/lectures", transcriptionRoutes(db, _providers, cfg));
   app.use("/api/subjects", subjectRoutes(db));
   app.use("/api/subjects", glossaryRoutes(db, dataDir));
   app.use("/api/abbreviations", abbreviationRoutes(db));

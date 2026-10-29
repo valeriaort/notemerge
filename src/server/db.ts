@@ -238,7 +238,9 @@ export function openDb(dbPath: string) {
       id TEXT PRIMARY KEY,
       chunk_id TEXT NOT NULL REFERENCES audio_chunks(id),
       audio_start_offset_ms INTEGER NOT NULL,
+      audio_end_offset_ms INTEGER NOT NULL DEFAULT 0,
       clock_start_time_ms INTEGER NOT NULL,
+      clock_end_time_ms INTEGER NOT NULL DEFAULT 0,
       text_raw TEXT NOT NULL,
       text TEXT NOT NULL,
       avg_logprob REAL NOT NULL,
@@ -263,6 +265,8 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN last_error TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN raw_response TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE sentences ADD COLUMN audio_end_offset_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE sentences ADD COLUMN clock_end_time_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
   return db;
 }
@@ -739,7 +743,9 @@ type SentenceRow = {
   id: string;
   chunk_id: string;
   audio_start_offset_ms: number;
+  audio_end_offset_ms: number;
   clock_start_time_ms: number;
+  clock_end_time_ms: number;
   text_raw: string;
   text: string;
   avg_logprob: number;
@@ -757,7 +763,9 @@ function rowToSentence(row: SentenceRow): Sentence {
     id: row.id,
     chunkId: row.chunk_id,
     audioStartOffsetMs: row.audio_start_offset_ms,
+    audioEndOffsetMs: row.audio_end_offset_ms ?? 0,
     clockStartTimeMs: row.clock_start_time_ms,
+    clockEndTimeMs: row.clock_end_time_ms ?? 0,
     textRaw: row.text_raw,
     text: row.text,
     avgLogprob: row.avg_logprob,
@@ -776,14 +784,17 @@ export function createSentence(
   sentence: Sentence,
 ): Sentence {
   db.prepare(
-    `INSERT INTO sentences (id, chunk_id, audio_start_offset_ms, clock_start_time_ms, text_raw, text,
+    `INSERT INTO sentences (id, chunk_id, audio_start_offset_ms, audio_end_offset_ms,
+       clock_start_time_ms, clock_end_time_ms, text_raw, text,
        avg_logprob, no_speech_prob, compression_ratio, status, stitched_into, flag_state, flag_reasons, corrected_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     sentence.id,
     sentence.chunkId,
     sentence.audioStartOffsetMs,
+    sentence.audioEndOffsetMs,
     sentence.clockStartTimeMs,
+    sentence.clockEndTimeMs,
     sentence.textRaw,
     sentence.text,
     sentence.avgLogprob,
@@ -798,6 +809,52 @@ export function createSentence(
   return rowToSentence(
     db.prepare("SELECT * FROM sentences WHERE id = ?").get(sentence.id) as SentenceRow,
   );
+}
+
+export type SentenceUpdate = Partial<Pick<Sentence,
+  "text" | "avgLogprob" | "noSpeechProb" | "compressionRatio" |
+  "status" | "stitchedInto" | "flagState" | "flagReasons" |
+  "audioEndOffsetMs" | "clockEndTimeMs"
+>>;
+
+export function updateSentence(
+  db: Database.Database,
+  id: string,
+  updates: SentenceUpdate,
+): void {
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.text !== undefined) { setClauses.push("text = ?"); values.push(updates.text); }
+  if (updates.avgLogprob !== undefined) { setClauses.push("avg_logprob = ?"); values.push(updates.avgLogprob); }
+  if (updates.noSpeechProb !== undefined) { setClauses.push("no_speech_prob = ?"); values.push(updates.noSpeechProb); }
+  if (updates.compressionRatio !== undefined) { setClauses.push("compression_ratio = ?"); values.push(updates.compressionRatio); }
+  if (updates.status !== undefined) { setClauses.push("status = ?"); values.push(updates.status); }
+  if (updates.stitchedInto !== undefined) { setClauses.push("stitched_into = ?"); values.push(updates.stitchedInto); }
+  if (updates.flagState !== undefined) { setClauses.push("flag_state = ?"); values.push(updates.flagState); }
+  if (updates.flagReasons !== undefined) { setClauses.push("flag_reasons = ?"); values.push(JSON.stringify(updates.flagReasons)); }
+  if (updates.audioEndOffsetMs !== undefined) { setClauses.push("audio_end_offset_ms = ?"); values.push(updates.audioEndOffsetMs); }
+  if (updates.clockEndTimeMs !== undefined) { setClauses.push("clock_end_time_ms = ?"); values.push(updates.clockEndTimeMs); }
+
+  if (setClauses.length === 0) return;
+  values.push(id);
+  db.prepare(`UPDATE sentences SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+}
+
+export function getAudioChunk(
+  db: Database.Database,
+  chunkId: string,
+): AudioChunk | undefined {
+  const row = db.prepare("SELECT * FROM audio_chunks WHERE id = ?").get(chunkId) as AudioChunkRow | undefined;
+  return row ? rowToAudioChunk(row) : undefined;
+}
+
+export function getAudioFile(
+  db: Database.Database,
+  audioFileId: string,
+): AudioFile | undefined {
+  const row = db.prepare("SELECT * FROM audio_files WHERE id = ?").get(audioFileId) as AudioFileRow | undefined;
+  return row ? rowToAudioFile(row) : undefined;
 }
 
 export function listSentencesByChunk(db: Database.Database, chunkId: string): Sentence[] {
