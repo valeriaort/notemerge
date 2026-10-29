@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import FormData from "form-data";
 import path from "path";
 import { readFileSync } from "fs";
-import { openDb } from "../../src/server/db.js";
+import { openDb, listAudioFiles } from "../../src/server/db.js";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
@@ -102,20 +102,14 @@ async function sealWithAudio(url: string, lectureId: string): Promise<{ audioFil
   form.append("audio1", SHORT_AUDIO, { filename: "lecture.wav", contentType: "audio/wav" });
   form.append("audio1StartTime", String(Date.now()));
   const headers = form.getHeaders() as Record<string, string>;
-  const res = await fetch(`${url}/api/lectures/${lectureId}/sources`, {
+  await fetch(`${url}/api/lectures/${lectureId}/sources`, {
     method: "POST",
     headers,
     body: form.getBuffer(),
   });
-  // fetch audio files to get the fileId
-  const lectureRes = await fetch(`${url}/api/lectures/${lectureId}/audio-files`);
-  if (lectureRes.ok) {
-    const files = await lectureRes.json() as { audioFiles: Array<{ id: string }> };
-    return { audioFileId: files.audioFiles?.[0]?.id ?? "" };
-  }
-  // fallback: get from DB directly
-  void res;
-  return { audioFileId: "" };
+  // read the audio file id directly from the DB
+  const files = listAudioFiles(server.db, lectureId);
+  return { audioFileId: files[0]?.id ?? "" };
 }
 
 async function postMerge(url: string, lectureId: string): Promise<{ mergeRun: MergeRun; mergedNote: MergedBlock[] }> {
