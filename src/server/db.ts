@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import path from "path";
-import type { AbbreviationPair, Lecture, SlideMarker, Subject, User } from "../shared/types.js";
+import type { AbbreviationPair, AudioChunk, AudioFile, Lecture, SlideMarker, Subject, User } from "../shared/types.js";
 
 export type DbRow = {
   id: string;
@@ -102,6 +102,27 @@ export function openDb(dbPath: string) {
       token TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       PRIMARY KEY (user_id, token)
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audio_files (
+      id TEXT PRIMARY KEY,
+      lecture_id TEXT NOT NULL REFERENCES lectures(id),
+      file_index INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      recording_start_ms INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audio_chunks (
+      id TEXT PRIMARY KEY,
+      audio_file_id TEXT NOT NULL REFERENCES audio_files(id),
+      chunk_index INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      start_offset_ms INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL
     );
   `);
 
@@ -338,12 +359,12 @@ export function listIgnoredTokens(db: Database.Database, userId: string): Readon
   return new Set(rows.map((r) => r.token));
 }
 
-// Seal a lecture: set stage to "sealed", assign subject, store presentation path
+// Seal a lecture: set stage to "sealed", assign subject, store optional presentation path
 export function sealLecture(
   db: Database.Database,
   lectureId: string,
   subjectId: string,
-  presentationPath: string,
+  presentationPath: string | null,
 ): Lecture | undefined {
   const now = Date.now();
   const result = db
@@ -355,4 +376,101 @@ export function sealLecture(
   if (result.changes === 0) return undefined;
   db.prepare("UPDATE users SET last_used_subject_id = ?").run(subjectId);
   return getLecture(db, lectureId);
+}
+
+// Audio file and chunk helpers
+
+type AudioFileRow = {
+  id: string;
+  lecture_id: string;
+  file_index: number;
+  file_path: string;
+  recording_start_ms: number;
+  duration_ms: number;
+  created_at: number;
+};
+
+function rowToAudioFile(row: AudioFileRow): AudioFile {
+  return {
+    id: row.id,
+    lectureId: row.lecture_id,
+    fileIndex: row.file_index,
+    filePath: row.file_path,
+    recordingStartMs: row.recording_start_ms,
+    durationMs: row.duration_ms,
+    createdAt: row.created_at,
+  };
+}
+
+export function createAudioFile(
+  db: Database.Database,
+  id: string,
+  lectureId: string,
+  fileIndex: number,
+  filePath: string,
+  recordingStartMs: number,
+  durationMs: number,
+): AudioFile {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO audio_files (id, lecture_id, file_index, file_path, recording_start_ms, duration_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, lectureId, fileIndex, filePath, recordingStartMs, durationMs, now);
+  return rowToAudioFile(
+    db.prepare("SELECT * FROM audio_files WHERE id = ?").get(id) as AudioFileRow,
+  );
+}
+
+export function listAudioFiles(db: Database.Database, lectureId: string): AudioFile[] {
+  return (
+    db
+      .prepare("SELECT * FROM audio_files WHERE lecture_id = ? ORDER BY file_index ASC")
+      .all(lectureId) as AudioFileRow[]
+  ).map(rowToAudioFile);
+}
+
+type AudioChunkRow = {
+  id: string;
+  audio_file_id: string;
+  chunk_index: number;
+  file_path: string;
+  start_offset_ms: number;
+  duration_ms: number;
+};
+
+function rowToAudioChunk(row: AudioChunkRow): AudioChunk {
+  return {
+    id: row.id,
+    audioFileId: row.audio_file_id,
+    chunkIndex: row.chunk_index,
+    filePath: row.file_path,
+    startOffsetMs: row.start_offset_ms,
+    durationMs: row.duration_ms,
+  };
+}
+
+export function createAudioChunk(
+  db: Database.Database,
+  id: string,
+  audioFileId: string,
+  chunkIndex: number,
+  filePath: string,
+  startOffsetMs: number,
+  durationMs: number,
+): AudioChunk {
+  db.prepare(
+    `INSERT INTO audio_chunks (id, audio_file_id, chunk_index, file_path, start_offset_ms, duration_ms)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, audioFileId, chunkIndex, filePath, startOffsetMs, durationMs);
+  return rowToAudioChunk(
+    db.prepare("SELECT * FROM audio_chunks WHERE id = ?").get(id) as AudioChunkRow,
+  );
+}
+
+export function listAudioChunks(db: Database.Database, audioFileId: string): AudioChunk[] {
+  return (
+    db
+      .prepare("SELECT * FROM audio_chunks WHERE audio_file_id = ? ORDER BY chunk_index ASC")
+      .all(audioFileId) as AudioChunkRow[]
+  ).map(rowToAudioChunk);
 }

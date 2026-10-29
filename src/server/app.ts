@@ -7,7 +7,7 @@ import type { Providers } from "../providers/interfaces.js";
 import { lectureRoutes } from "./routes/lectures.js";
 import { markerRoutes } from "./routes/markers.js";
 import { subjectRoutes } from "./routes/subjects.js";
-import { sourcesRoutes } from "./routes/sources.js";
+import { audioSourcesRoutes } from "./routes/audio.js";
 import { abbreviationRoutes, abbreviationLectureRoutes } from "./routes/abbreviations.js";
 import { glossaryRoutes } from "./routes/glossary.js";
 import { windowRoutes } from "./routes/windows.js";
@@ -25,7 +25,7 @@ export function createApp(
 
   app.use("/api/lectures", lectureRoutes(db, dataDir));
   app.use("/api/lectures", markerRoutes(db));
-  app.use("/api/lectures", sourcesRoutes(db));
+  app.use("/api/lectures", audioSourcesRoutes(db, dataDir));
   app.use("/api/lectures", abbreviationLectureRoutes(db));
   app.use("/api/lectures", windowRoutes(db));
   app.use("/api/subjects", subjectRoutes(db));

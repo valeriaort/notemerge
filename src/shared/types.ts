@@ -106,3 +106,22 @@ export type SlideWindow = {
   mappedSlides: string[];
   blockIds: string[];
 };
+
+export type AudioFile = {
+  id: string;
+  lectureId: string;
+  fileIndex: number;
+  filePath: string;
+  recordingStartMs: number;
+  durationMs: number;
+  createdAt: number;
+};
+
+export type AudioChunk = {
+  id: string;
+  audioFileId: string;
+  chunkIndex: number;
+  filePath: string;
+  startOffsetMs: number;
+  durationMs: number;
+};

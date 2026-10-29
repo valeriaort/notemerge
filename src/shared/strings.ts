@@ -44,6 +44,14 @@ export const strings = {
     countDiffNotice: (windows: number, slides: number) =>
       `${windows} window${windows === 1 ? "" : "s"}, ${slides} slide${slides === 1 ? "" : "s"}`,
   },
+  audio: {
+    notesAloneError: "At least a presentation or an audio file is required — notes alone cannot be merged.",
+    audio2WithoutAudio1Error: "A second audio file requires a first audio file.",
+    audio2StartTimeRequired: "A recording start time is required for the second audio file.",
+    tooManyFilesError: "At most two audio files are allowed per lecture.",
+    durationTooLongError: "Total audio duration exceeds the maximum allowed (~2 hours).",
+    chunkingFailed: (msg: string) => `Audio chunking failed: ${msg}`,
+  },
   errors: {
     lectureNotFound: "Lecture not found.",
     saveFailed: "Failed to save notes. Please try again.",
