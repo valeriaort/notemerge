@@ -14,5 +14,7 @@
   },
   "contextMarginMs": 60000,
   "mergeWindowConcurrency": 4,
+  "mergeWindowRetryAttempts": 3,
+  "mergeWindowRetryBaseMs": 100,
   "chunkTargetMs": 120000
 }

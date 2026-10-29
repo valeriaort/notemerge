@@ -7,7 +7,7 @@ import type {
   NotionExportBlock,
   Providers,
 } from "./interfaces.js";
-import { TranscriptionHttpError } from "./interfaces.js";
+import { TranscriptionHttpError, ClassifierRetryableError } from "./interfaces.js";
 import type {
   TranscriptionResult,
   WhisperSegment,
@@ -148,6 +148,37 @@ export class ScriptedClassifier implements ClassifierProvider {
       result[q.key] = this.conflictMap[q.key] ?? { label: "supported", probability: 0.99 };
     }
     return result;
+  }
+}
+
+export type ClassifierCallFailure = { statusCode: number; retryAfterMs: number; message?: string };
+
+export class FailableClassifier extends ScriptedClassifier {
+  private coverageCallQueue: Array<ClassifierCallFailure | null> = [];
+  private conflictCallQueue: Array<ClassifierCallFailure | null> = [];
+
+  scheduleCoverageCall(result: ClassifierCallFailure | null): void {
+    this.coverageCallQueue.push(result);
+  }
+
+  scheduleConflictCall(result: ClassifierCallFailure | null): void {
+    this.conflictCallQueue.push(result);
+  }
+
+  override async classifyCoverage(state: string, questions: CoverageQuestion[]): Promise<CoverageAnswers> {
+    const next = this.coverageCallQueue.shift();
+    if (next !== undefined && next !== null) {
+      throw new ClassifierRetryableError(next.statusCode, next.retryAfterMs, next.message ?? `HTTP ${next.statusCode}`);
+    }
+    return super.classifyCoverage(state, questions);
+  }
+
+  override async checkConflicts(state: string, questions: ConflictQuestion[]): Promise<ConflictAnswers> {
+    const next = this.conflictCallQueue.shift();
+    if (next !== undefined && next !== null) {
+      throw new ClassifierRetryableError(next.statusCode, next.retryAfterMs, next.message ?? `HTTP ${next.statusCode}`);
+    }
+    return super.checkConflicts(state, questions);
   }
 }
 

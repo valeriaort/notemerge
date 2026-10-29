@@ -72,6 +72,9 @@ export const strings = {
     done: "Merge complete",
     alreadyMerged: "This lecture has already been merged.",
     noSlides: "No slides found for this lecture.",
+    paused: (failedCount: number) =>
+      `Jev failed on ${failedCount} window${failedCount === 1 ? "" : "s"}. Retry to re-run only the failed windows.`,
+    retryNotAllowed: "Retry is only available when the merge is paused.",
     errors: {
       mergeFailed: "Merge failed. Please try again.",
     },

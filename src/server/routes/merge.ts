@@ -12,7 +12,7 @@ import {
   updateMergedBlockText,
 } from "../db.js";
 import type { MergedBlockReviewState } from "../../shared/types.js";
-import { mergeLecture } from "../mergeLecture.js";
+import { mergeLecture, retryMergeLecture } from "../mergeLecture.js";
 import { strings } from "../../shared/strings.js";
 
 export function mergeRoutes(
@@ -142,6 +142,34 @@ export function mergeRoutes(
 
     const updated = getMergedBlock(db, existing.id);
     res.json({ block: updated });
+  });
+
+  router.post("/:lectureId/merge/retry", async (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["lectureId"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+
+    const mergeRun = getMergeRunByLectureId(db, lecture.id);
+    if (!mergeRun) {
+      res.status(404).json({ error: "No merge run found for this lecture." });
+      return;
+    }
+
+    if (mergeRun.state !== "paused") {
+      res.status(409).json({ error: strings.merge.retryNotAllowed });
+      return;
+    }
+
+    try {
+      const updatedRun = await retryMergeLecture(db, lecture.id, providers, config);
+      const blocks = updatedRun.state === "done" ? listMergedBlocks(db, updatedRun.id) : [];
+      res.status(200).json({ mergeRun: updatedRun, mergedNote: blocks });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      res.status(500).json({ error: msg });
+    }
   });
 
   return router;
