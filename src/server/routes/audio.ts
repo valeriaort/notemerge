@@ -45,6 +45,38 @@ export function audioSourcesRoutes(
     res.json({ suggestedStartMs });
   });
 
+  // Derive recording start time from an audio offset aligned to a slide marker (user stories 24, 25).
+  // derivedStartMs = markerTimestamp − audioOffsetMs
+  router.post("/:id/derive-audio-start", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["id"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+
+    const body = req.body as { markerId?: unknown; audioOffsetMs?: unknown };
+
+    if (!body.markerId || typeof body.markerId !== "string") {
+      res.status(400).json({ error: strings.audio.alignMarkerRequired });
+      return;
+    }
+
+    if (typeof body.audioOffsetMs !== "number" || body.audioOffsetMs < 0) {
+      res.status(400).json({ error: strings.audio.alignOffsetInvalid });
+      return;
+    }
+
+    const markers = listMarkers(db, lecture.id);
+    const marker = markers.find((m) => m.id === body.markerId);
+    if (!marker) {
+      res.status(400).json({ error: strings.audio.alignMarkerNotFound });
+      return;
+    }
+
+    const derivedStartMs = marker.timestamp - (body.audioOffsetMs as number);
+    res.json({ derivedStartMs });
+  });
+
   router.post(
     "/:id/sources",
     upload.fields([
