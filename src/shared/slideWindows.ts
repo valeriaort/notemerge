@@ -4,9 +4,10 @@ const FOUR_MINUTES_MS = 4 * 60 * 1000;
 
 function lectureBounds(
   notesData: NotesDocument,
+  audioBounds?: { startMs: number; endMs: number },
 ): { startMs: number; endMs: number } | null {
-  let startMs: number | null = null;
-  let endMs: number | null = null;
+  let startMs: number | null = audioBounds?.startMs ?? null;
+  let endMs: number | null = audioBounds?.endMs ?? null;
 
   for (const meta of Object.values(notesData.meta)) {
     if (meta.firstEditTime === undefined) continue;
@@ -23,8 +24,9 @@ export function computeWindows(
   markers: SlideMarker[],
   notesData: NotesDocument,
   slideCount?: number,
+  audioBounds?: { startMs: number; endMs: number },
 ): SlideWindow[] {
-  const bounds = lectureBounds(notesData);
+  const bounds = lectureBounds(notesData, audioBounds);
   if (bounds === null) return [];
 
   const { startMs: lectureStart, endMs: lectureEnd } = bounds;

@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 import {
   getLecture,
   listMarkers,
+  listAudioFiles,
   getWindowOverrides,
   saveWindowOverrides,
 } from "../db.js";
@@ -51,6 +52,20 @@ function assignBlockIds(
   return result;
 }
 
+// Audio start/end become part of the lecture bounds (spec: lecture start/end include audio)
+function getAudioBounds(
+  db: Database.Database,
+  lectureId: string,
+): { startMs: number; endMs: number } | undefined {
+  const audioFiles = listAudioFiles(db, lectureId);
+  if (audioFiles.length === 0) return undefined;
+  const startMs = Math.min(...audioFiles.map((af) => af.recordingStartMs));
+  const endMs = Math.max(
+    ...audioFiles.map((af) => af.recordingStartMs + af.durationMs),
+  );
+  return { startMs, endMs };
+}
+
 // Returns the current override state, initialising from computed windows on first use
 function getCurrentOverrides(
   db: Database.Database,
@@ -61,7 +76,8 @@ function getCurrentOverrides(
   if (existing !== null) return existing;
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
   const slideCount = getSlideCount(lecture.dataDir);
-  return toOverrides(computeWindows(markers, notesData, slideCount));
+  const audioBounds = getAudioBounds(db, lecture.id);
+  return toOverrides(computeWindows(markers, notesData, slideCount, audioBounds));
 }
 
 export function windowRoutes(db: Database.Database): Router {
@@ -79,12 +95,14 @@ export function windowRoutes(db: Database.Database): Router {
     const markers = listMarkers(db, lecture.id);
     const slideCount = getSlideCount(lecture.dataDir);
 
+    const audioBounds = getAudioBounds(db, lecture.id);
+
     const storedOverrides = getWindowOverrides(db, lecture.id);
     let windows: SlideWindow[];
     if (storedOverrides !== null) {
       windows = assignBlockIds(storedOverrides, notesData);
     } else {
-      windows = computeWindows(markers, notesData, slideCount);
+      windows = computeWindows(markers, notesData, slideCount, audioBounds);
     }
 
     let notice: string | undefined;
