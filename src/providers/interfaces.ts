@@ -7,6 +7,16 @@ import type {
   WritingOperation,
 } from "../shared/types.js";
 
+export class TranscriptionHttpError extends Error {
+  readonly statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "TranscriptionHttpError";
+    this.statusCode = statusCode;
+  }
+}
+
 export interface SpeechToTextProvider {
   transcribeChunk(chunkPath: string, prompt: string): Promise<TranscriptionResult>;
 }

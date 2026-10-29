@@ -781,3 +781,406 @@ describe("transcript cleanup ordering", () => {
     expect(stitchedRetired!.flagState).toBe("unflagged");
   }, TEST_TIMEOUT);
 });
+
+// ── Retry / backoff / per-chunk failures ─────────────────────────────────────
+
+describe("retry and backoff", () => {
+  let speechToText: ScriptedSpeechToText;
+
+  beforeEach(async () => {
+    speechToText = new ScriptedSpeechToText();
+    server = await startTestServer({ speechToText });
+  });
+
+  afterEach(() => server.close());
+
+  it("fails a specific chunk N times then succeeds within MAX_RETRIES", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db.prepare(
+      `SELECT ac.file_path, ac.id FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id WHERE af.lecture_id = ?`,
+    ).all(lecture.id) as { file_path: string; id: string }[];
+    expect(chunkRows.length).toBeGreaterThan(0);
+    const { file_path: chunkPath, id: chunkId } = chunkRows[0]!;
+
+    // Fail twice (within MAX_RETRIES=3, so eventually succeeds)
+    speechToText.setChunkFailCount(chunkPath, 2, 429);
+
+    const { status, body } = await triggerTranscription(lecture.id);
+    expect(status).toBe(201);
+    expect(body.transcriptRun!.state).toBe("done");
+
+    // Provider was called 3 times: 2 fails + 1 success
+    const callsForChunk = speechToText.capturedPrompts.filter((p) => p.chunkPath === chunkPath);
+    expect(callsForChunk.length).toBe(3);
+    // DB records a single successful completion
+    const row = server.db.prepare("SELECT attempts, status FROM audio_chunks WHERE id = ?").get(chunkId) as { attempts: number; status: string };
+    expect(row.status).toBe("done");
+    expect(row.attempts).toBe(1);
+  }, TEST_TIMEOUT);
+
+  it("pauses with named failed chunk when retries are exhausted", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db.prepare(
+      `SELECT ac.file_path, ac.id FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id WHERE af.lecture_id = ?`,
+    ).all(lecture.id) as { file_path: string; id: string }[];
+    const { file_path: chunkPath, id: chunkId } = chunkRows[0]!;
+
+    speechToText.setChunkFailCount(chunkPath, 10, 429);
+
+    const { body } = await triggerTranscription(lecture.id);
+    expect(body.transcriptRun!.state).toBe("paused");
+    expect(body.transcriptRun!.failedChunkIds).toContain(chunkId);
+
+    // GET /transcribe should include named failed chunk
+    const statusRes = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`);
+    const statusBody = await statusRes.json() as {
+      transcriptRun: TranscriptRun;
+      failedChunks: Array<{ id: string; chunkName: string; lastError: string | null }>;
+    };
+    expect(statusBody.failedChunks).toHaveLength(1);
+    expect(statusBody.failedChunks[0]!.chunkName).toBe("A01-C001");
+    expect(statusBody.failedChunks[0]!.lastError).toContain("429");
+  }, TEST_TIMEOUT);
+
+  it("retry re-sends only failed chunks; skips done chunks", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const audioFileRows = server.db.prepare(
+      "SELECT id FROM audio_files WHERE lecture_id = ?",
+    ).all(lecture.id) as { id: string }[];
+    const audioFileId = audioFileRows[0]!.id;
+
+    // Insert a fake "done" chunk to simulate an already-transcribed chunk
+    server.db.prepare(
+      `INSERT INTO audio_chunks (id, audio_file_id, chunk_index, file_path, start_offset_ms, duration_ms, status, attempts)
+       VALUES (?, ?, 99, '/fake/done.wav', 0, 1000, 'done', 1)`,
+    ).run("fake-done-chunk", audioFileId);
+
+    // Fail the real chunk permanently
+    const chunkRows = server.db.prepare(
+      `SELECT ac.file_path, ac.id FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE af.lecture_id = ? AND ac.id != 'fake-done-chunk'`,
+    ).all(lecture.id) as { file_path: string; id: string }[];
+    const { file_path: chunkPath, id: chunkId } = chunkRows[0]!;
+
+    speechToText.setChunkFailCount(chunkPath, 10, 429);
+    await triggerTranscription(lecture.id); // first run: real chunk fails
+
+    const attemptsAfterFirst = (server.db.prepare("SELECT attempts FROM audio_chunks WHERE id = ?").get(chunkId) as { attempts: number }).attempts;
+    const doneAttemptsAfterFirst = (server.db.prepare("SELECT attempts FROM audio_chunks WHERE id = 'fake-done-chunk'").get() as { attempts: number }).attempts;
+    expect(doneAttemptsAfterFirst).toBe(1); // done chunk never re-sent
+
+    // Reset fail count and retry
+    speechToText.setChunkFailCount(chunkPath, 0);
+    const { body } = await triggerTranscription(lecture.id);
+    expect(body.transcriptRun!.state).toBe("done");
+
+    const attemptsAfterRetry = (server.db.prepare("SELECT attempts FROM audio_chunks WHERE id = ?").get(chunkId) as { attempts: number }).attempts;
+    expect(attemptsAfterRetry).toBe(attemptsAfterFirst + 1); // one more attempt on retry
+
+    // Done chunk still not re-sent
+    const doneAttemptsAfterRetry = (server.db.prepare("SELECT attempts FROM audio_chunks WHERE id = 'fake-done-chunk'").get() as { attempts: number }).attempts;
+    expect(doneAttemptsAfterRetry).toBe(1);
+  }, TEST_TIMEOUT);
+
+  it("resumes mid-run transcript when server restarts (running state)", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    // Simulate server restart mid-run: insert a transcript_run in "running" state
+    server.db.prepare(
+      `INSERT INTO transcript_runs (id, lecture_id, state, model, failed_chunk_ids, created_at)
+       VALUES (?, ?, 'running', ?, '[]', ?)`,
+    ).run("mid-run-id", lecture.id, "whisper-large-v3", Date.now());
+
+    // POST /transcribe should resume
+    const { status, body } = await triggerTranscription(lecture.id);
+    expect(status).toBe(201);
+    expect(body.transcriptRun!.state).toBe("done");
+  }, TEST_TIMEOUT);
+
+  it("stage cannot reach transcript-check with a missing chunk", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const chunkRows = server.db.prepare(
+      `SELECT ac.file_path FROM audio_chunks ac
+       JOIN audio_files af ON ac.audio_file_id = af.id WHERE af.lecture_id = ?`,
+    ).all(lecture.id) as { file_path: string }[];
+    speechToText.setChunkFailCount(chunkRows[0]!.file_path, 10, 500);
+
+    await triggerTranscription(lecture.id);
+
+    const updatedLecture = await fetch(`${server.url}/api/lectures/${lecture.id}`).then((r) => r.json()) as Lecture;
+    expect(updatedLecture.stage).toBe("sealed");
+  }, TEST_TIMEOUT);
+});
+
+// ── Transcription model change ────────────────────────────────────────────────
+
+describe("transcription model change", () => {
+  beforeEach(async () => {
+    server = await startTestServer({ speechToText: new ScriptedSpeechToText() });
+  });
+
+  afterEach(() => server.close());
+
+  it("warns before discarding existing transcript (no confirm)", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/transcription-model`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "whisper-large-v3-turbo" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { warning?: string };
+    expect(body.warning).toBeDefined();
+    expect(body.warning).toContain("confirm");
+
+    // Transcript must be untouched
+    const runRes = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`);
+    expect(runRes.status).toBe(200);
+    const runBody = await runRes.json() as { transcriptRun: TranscriptRun };
+    expect(runBody.transcriptRun.state).toBe("done");
+  }, TEST_TIMEOUT);
+
+  it("discards transcript and sets new model when confirm=true", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/transcription-model`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "whisper-large-v3-turbo", confirm: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    // Transcript is discarded
+    const runRes = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`);
+    expect(runRes.status).toBe(404);
+
+    // Stage reset to sealed
+    const lec = await fetch(`${server.url}/api/lectures/${lecture.id}`).then((r) => r.json()) as Lecture;
+    expect(lec.stage).toBe("sealed");
+
+    // Re-running uses new model
+    const { body: runBody } = await triggerTranscription(lecture.id);
+    expect(runBody.transcriptRun!.model).toBe("whisper-large-v3-turbo");
+  }, TEST_TIMEOUT);
+
+  it("sets model without warning when no transcript exists", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/transcription-model`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "whisper-large-v3-turbo" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    // Next transcription uses new model
+    const { body: runBody } = await triggerTranscription(lecture.id);
+    expect(runBody.transcriptRun!.model).toBe("whisper-large-v3-turbo");
+  }, TEST_TIMEOUT);
+
+  it("rejects model change with 409 after review has begun", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    // Snapshot transcript state
+    const sentencesBefore = server.db.prepare(
+      `SELECT * FROM sentences WHERE chunk_id IN
+       (SELECT ac.id FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id WHERE af.lecture_id = ?)
+       ORDER BY id`,
+    ).all(lecture.id);
+
+    // Simulate review has begun
+    server.db.prepare("UPDATE lectures SET stage = 'review' WHERE id = ?").run(lecture.id);
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/transcription-model`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "whisper-large-v3-turbo", confirm: true }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBeTruthy();
+
+    // Transcript data unchanged
+    const sentencesAfter = server.db.prepare(
+      `SELECT * FROM sentences WHERE chunk_id IN
+       (SELECT ac.id FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id WHERE af.lecture_id = ?)
+       ORDER BY id`,
+    ).all(lecture.id);
+    expect(sentencesAfter).toEqual(sentencesBefore);
+  }, TEST_TIMEOUT);
+});
+
+// ── Recording start time change ───────────────────────────────────────────────
+
+describe("recording start time change", () => {
+  beforeEach(async () => {
+    server = await startTestServer({ speechToText: new ScriptedSpeechToText() });
+  });
+
+  afterEach(() => server.close());
+
+  it("warns before discarding transcript when changing recording start (no confirm)", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const audioFiles = server.db.prepare(
+      "SELECT id FROM audio_files WHERE lecture_id = ?",
+    ).all(lecture.id) as { id: string }[];
+    const audioFileId = audioFiles[0]!.id;
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/audio-files/${audioFileId}/recording-start`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingStartMs: RECORDING_START + 60000 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { warning?: string };
+    expect(body.warning).toBeDefined();
+    expect(body.warning).toContain("confirm");
+
+    // Transcript must be untouched
+    const runRes = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`);
+    expect(runRes.status).toBe(200);
+  }, TEST_TIMEOUT);
+
+  it("discards transcript and updates recording start when confirm=true", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const audioFiles = server.db.prepare(
+      "SELECT id FROM audio_files WHERE lecture_id = ?",
+    ).all(lecture.id) as { id: string }[];
+    const audioFileId = audioFiles[0]!.id;
+
+    const newStart = RECORDING_START + 60000;
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/audio-files/${audioFileId}/recording-start`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingStartMs: newStart, confirm: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { ok: boolean }).ok).toBe(true);
+
+    // Transcript discarded
+    const runRes = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`);
+    expect(runRes.status).toBe(404);
+
+    // Stage reset to sealed
+    const lec = await fetch(`${server.url}/api/lectures/${lecture.id}`).then((r) => r.json()) as Lecture;
+    expect(lec.stage).toBe("sealed");
+
+    // Recording start updated
+    const af = server.db.prepare("SELECT recording_start_ms FROM audio_files WHERE id = ?").get(audioFileId) as { recording_start_ms: number };
+    expect(af.recording_start_ms).toBe(newStart);
+  }, TEST_TIMEOUT);
+
+  it("updates recording start without warning when no transcript exists", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+
+    const audioFiles = server.db.prepare(
+      "SELECT id FROM audio_files WHERE lecture_id = ?",
+    ).all(lecture.id) as { id: string }[];
+    const audioFileId = audioFiles[0]!.id;
+
+    const newStart = RECORDING_START + 30000;
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/audio-files/${audioFileId}/recording-start`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingStartMs: newStart }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { ok: boolean }).ok).toBe(true);
+
+    const af = server.db.prepare("SELECT recording_start_ms FROM audio_files WHERE id = ?").get(audioFileId) as { recording_start_ms: number };
+    expect(af.recording_start_ms).toBe(newStart);
+  }, TEST_TIMEOUT);
+
+  it("rejects recording-start change with 409 after review has begun", async () => {
+    const lecture = await createLecture();
+    const subject = await createSubject("Test");
+    await putNotes(lecture.id, notesWithNoBlockInRange());
+    await uploadAudio(lecture.id, subject.id, RECORDING_START);
+    await triggerTranscription(lecture.id);
+
+    const audioFiles = server.db.prepare(
+      "SELECT id FROM audio_files WHERE lecture_id = ?",
+    ).all(lecture.id) as { id: string }[];
+    const audioFileId = audioFiles[0]!.id;
+
+    // Snapshot state
+    const runBefore = server.db.prepare(
+      "SELECT * FROM transcript_runs WHERE lecture_id = ?",
+    ).get(lecture.id);
+
+    // Simulate review has begun
+    server.db.prepare("UPDATE lectures SET stage = 'review' WHERE id = ?").run(lecture.id);
+
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/audio-files/${audioFileId}/recording-start`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingStartMs: RECORDING_START + 60000, confirm: true }),
+    });
+    expect(res.status).toBe(409);
+
+    // State unchanged
+    const runAfter = server.db.prepare(
+      "SELECT * FROM transcript_runs WHERE lecture_id = ?",
+    ).get(lecture.id);
+    expect(runAfter).toEqual(runBefore);
+
+    // Recording start unchanged
+    const af = server.db.prepare("SELECT recording_start_ms FROM audio_files WHERE id = ?").get(audioFileId) as { recording_start_ms: number };
+    expect(af.recording_start_ms).toBe(RECORDING_START);
+  }, TEST_TIMEOUT);
+});

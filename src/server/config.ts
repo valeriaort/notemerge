@@ -23,6 +23,7 @@ export interface Config {
   contextMarginMs: number;
   mergeWindowConcurrency: number;
   chunkTargetMs: number;
+  retryDelayBaseMs?: number;
 }
 
 function loadJson(filePath: string): Partial<Config> {
