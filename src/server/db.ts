@@ -1174,3 +1174,42 @@ export function updateAudioFileRecordingStart(
 ): void {
   db.prepare("UPDATE audio_files SET recording_start_ms = ? WHERE id = ?").run(recordingStartMs, id);
 }
+
+// ── Export helpers ────────────────────────────────────────────────────────────
+
+export function hasUnresolvedConflicts(
+  db: Database.Database,
+  lectureId: string,
+): boolean {
+  const row = db.prepare(
+    `SELECT 1 FROM merged_blocks mb
+     JOIN merge_runs mr ON mb.merge_run_id = mr.id
+     WHERE mr.lecture_id = ? AND mb.origin = 'conflict' AND mb.review_state = 'unresolved'
+     LIMIT 1`,
+  ).get(lectureId);
+  return row !== undefined;
+}
+
+export type FinalNoteBlock = { id: string; text: string };
+
+export function computeFinalNoteBlocks(
+  db: Database.Database,
+  lectureId: string,
+  mergeRunId: string,
+): FinalNoteBlock[] {
+  const markerRows = db.prepare(
+    "SELECT block_id FROM slide_markers WHERE lecture_id = ?",
+  ).all(lectureId) as { block_id: string }[];
+  const markerBlockIds = new Set(markerRows.map((r) => r.block_id));
+
+  const blocks = listMergedBlocks(db, mergeRunId);
+
+  const result: FinalNoteBlock[] = [];
+  for (const block of blocks) {
+    if (block.reviewState === "reverted") continue;
+    if (block.origin === "conflict" && block.reviewState === "unresolved") continue;
+    if (block.origin === "student" && block.noteId !== null && markerBlockIds.has(block.noteId)) continue;
+    result.push({ id: block.id, text: block.text });
+  }
+  return result;
+}

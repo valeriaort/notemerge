@@ -83,6 +83,15 @@ export const strings = {
     noMergedNote: "No merged note yet.",
     lockedAfterReview: "Cannot change transcription settings after review decisions have been made.",
   },
+  export: {
+    unresolvedConflicts: "Export blocked: resolve all conflicts before exporting.",
+    noMerge: "No merge found for this lecture.",
+    notInReview: "Lecture is not in review stage.",
+    pdfButton: "Save as PDF",
+    notionButton: "Export to Notion",
+    cleanPreviewToggle: "Clean preview",
+    exportedStage: "Exported",
+  },
   glossary: {
     noGlossaryHint: "ⓘ This subject has no glossary. Upload one in Subject Settings.",
     guiaLabel: "Guía docente (optional)",
