@@ -40,20 +40,50 @@ export interface User {
   createdAt: number;
 }
 
-export type TranscriptionResult = {
-  sentences: TranscriptSentence[];
-};
-
-export type TranscriptSentence = {
-  id: string;
-  text: string;
+export type WhisperSegment = {
   startMs: number;
   endMs: number;
-  flagged: boolean;
+  text: string;
   avgLogprob: number;
   noSpeechProb: number;
   compressionRatio: number;
 };
+
+export type TranscriptionResult = {
+  segments: WhisperSegment[];
+};
+
+export type TranscriptRunState = "running" | "paused" | "done";
+
+export interface TranscriptRun {
+  id: string;
+  lectureId: string;
+  state: TranscriptRunState;
+  model: string;
+  failedChunkIds: string[];
+  createdAt: number;
+}
+
+export type ChunkStatus = "pending" | "done" | "failed";
+export type SentenceStatus = "active" | "retired";
+export type SentenceFlagState = "unflagged" | "flagged_unhandled" | "corrected" | "advanced";
+
+export interface Sentence {
+  id: string;
+  chunkId: string;
+  audioStartOffsetMs: number;
+  clockStartTimeMs: number;
+  textRaw: string;
+  text: string;
+  avgLogprob: number;
+  noSpeechProb: number;
+  compressionRatio: number;
+  status: SentenceStatus;
+  stitchedInto: string | null;
+  flagState: SentenceFlagState;
+  flagReasons: string[];
+  correctedText: string | null;
+}
 
 export type CoverageLabel = "covered" | "partially_covered" | "missing" | "noise";
 export type ConflictLabel = "supported" | "unsupported" | "conflicts";
@@ -123,6 +153,7 @@ export type AudioFile = {
   recordingStartMs: number;
   durationMs: number;
   createdAt: number;
+  transcriptionModel: string | null;
 };
 
 export type AudioChunk = {
@@ -132,6 +163,10 @@ export type AudioChunk = {
   filePath: string;
   startOffsetMs: number;
   durationMs: number;
+  status: ChunkStatus;
+  attempts: number;
+  lastError: string | null;
+  rawResponse: string | null;
 };
 
 export type MergeRunState = "pending" | "running" | "paused" | "haiku" | "done";

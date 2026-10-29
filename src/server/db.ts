@@ -5,6 +5,7 @@ import type {
   AbbreviationPair,
   AudioChunk,
   AudioFile,
+  ChunkStatus,
   Citation,
   EditListEntry,
   EditListEntryType,
@@ -17,8 +18,13 @@ import type {
   Operation,
   OperationKind,
   OperationStatus,
+  Sentence,
+  SentenceFlagState,
+  SentenceStatus,
   SlideMarker,
   Subject,
+  TranscriptRun,
+  TranscriptRunState,
   User,
   WindowOverride,
   WindowResult,
@@ -218,12 +224,45 @@ export function openDb(dbPath: string) {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transcript_runs (
+      id TEXT PRIMARY KEY,
+      lecture_id TEXT NOT NULL UNIQUE REFERENCES lectures(id),
+      state TEXT NOT NULL DEFAULT 'running',
+      model TEXT NOT NULL,
+      failed_chunk_ids TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sentences (
+      id TEXT PRIMARY KEY,
+      chunk_id TEXT NOT NULL REFERENCES audio_chunks(id),
+      audio_start_offset_ms INTEGER NOT NULL,
+      clock_start_time_ms INTEGER NOT NULL,
+      text_raw TEXT NOT NULL,
+      text TEXT NOT NULL,
+      avg_logprob REAL NOT NULL,
+      no_speech_prob REAL NOT NULL,
+      compression_ratio REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      stitched_into TEXT,
+      flag_state TEXT NOT NULL DEFAULT 'unflagged',
+      flag_reasons TEXT NOT NULL DEFAULT '[]',
+      corrected_text TEXT
+    );
+  `);
+
   // Additive migrations — safe to run repeatedly
   try { db.exec("ALTER TABLE users ADD COLUMN last_used_subject_id TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN presentation_path TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE subjects ADD COLUMN glossary_terms TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE subjects ADD COLUMN guia_docente_path TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN window_overrides TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_files ADD COLUMN transcription_model TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_chunks ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_chunks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_chunks ADD COLUMN last_error TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_chunks ADD COLUMN raw_response TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -512,6 +551,7 @@ type AudioFileRow = {
   recording_start_ms: number;
   duration_ms: number;
   created_at: number;
+  transcription_model: string | null;
 };
 
 function rowToAudioFile(row: AudioFileRow): AudioFile {
@@ -523,6 +563,7 @@ function rowToAudioFile(row: AudioFileRow): AudioFile {
     recordingStartMs: row.recording_start_ms,
     durationMs: row.duration_ms,
     createdAt: row.created_at,
+    transcriptionModel: row.transcription_model ?? null,
   };
 }
 
@@ -560,6 +601,10 @@ type AudioChunkRow = {
   file_path: string;
   start_offset_ms: number;
   duration_ms: number;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  raw_response: string | null;
 };
 
 function rowToAudioChunk(row: AudioChunkRow): AudioChunk {
@@ -570,6 +615,10 @@ function rowToAudioChunk(row: AudioChunkRow): AudioChunk {
     filePath: row.file_path,
     startOffsetMs: row.start_offset_ms,
     durationMs: row.duration_ms,
+    status: (row.status ?? "pending") as ChunkStatus,
+    attempts: row.attempts ?? 0,
+    lastError: row.last_error ?? null,
+    rawResponse: row.raw_response ?? null,
   };
 }
 
@@ -597,6 +646,178 @@ export function listAudioChunks(db: Database.Database, audioFileId: string): Aud
       .prepare("SELECT * FROM audio_chunks WHERE audio_file_id = ? ORDER BY chunk_index ASC")
       .all(audioFileId) as AudioChunkRow[]
   ).map(rowToAudioChunk);
+}
+
+export function updateAudioChunkTranscription(
+  db: Database.Database,
+  id: string,
+  status: ChunkStatus,
+  rawResponse: string | null,
+  error: string | null,
+): void {
+  db.prepare(
+    `UPDATE audio_chunks SET status = ?, attempts = attempts + 1, raw_response = ?, last_error = ? WHERE id = ?`,
+  ).run(status, rawResponse, error, id);
+}
+
+export function setAudioFileTranscriptionModel(
+  db: Database.Database,
+  id: string,
+  model: string,
+): void {
+  db.prepare("UPDATE audio_files SET transcription_model = ? WHERE id = ?").run(model, id);
+}
+
+// ── Transcript run helpers ───────────────────────────────────────────────────
+
+type TranscriptRunRow = {
+  id: string;
+  lecture_id: string;
+  state: string;
+  model: string;
+  failed_chunk_ids: string;
+  created_at: number;
+};
+
+function rowToTranscriptRun(row: TranscriptRunRow): TranscriptRun {
+  return {
+    id: row.id,
+    lectureId: row.lecture_id,
+    state: row.state as TranscriptRunState,
+    model: row.model,
+    failedChunkIds: JSON.parse(row.failed_chunk_ids) as string[],
+    createdAt: row.created_at,
+  };
+}
+
+export function createTranscriptRun(
+  db: Database.Database,
+  id: string,
+  lectureId: string,
+  model: string,
+): TranscriptRun {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO transcript_runs (id, lecture_id, state, model, failed_chunk_ids, created_at)
+     VALUES (?, ?, 'running', ?, '[]', ?)`,
+  ).run(id, lectureId, model, now);
+  return rowToTranscriptRun(
+    db.prepare("SELECT * FROM transcript_runs WHERE id = ?").get(id) as TranscriptRunRow,
+  );
+}
+
+export function getTranscriptRunByLectureId(
+  db: Database.Database,
+  lectureId: string,
+): TranscriptRun | undefined {
+  const row = db
+    .prepare("SELECT * FROM transcript_runs WHERE lecture_id = ?")
+    .get(lectureId) as TranscriptRunRow | undefined;
+  return row ? rowToTranscriptRun(row) : undefined;
+}
+
+export function updateTranscriptRunState(
+  db: Database.Database,
+  id: string,
+  state: TranscriptRunState,
+  failedChunkIds?: string[],
+): void {
+  if (failedChunkIds !== undefined) {
+    db.prepare("UPDATE transcript_runs SET state = ?, failed_chunk_ids = ? WHERE id = ?").run(
+      state,
+      JSON.stringify(failedChunkIds),
+      id,
+    );
+  } else {
+    db.prepare("UPDATE transcript_runs SET state = ? WHERE id = ?").run(state, id);
+  }
+}
+
+// ── Sentence helpers ─────────────────────────────────────────────────────────
+
+type SentenceRow = {
+  id: string;
+  chunk_id: string;
+  audio_start_offset_ms: number;
+  clock_start_time_ms: number;
+  text_raw: string;
+  text: string;
+  avg_logprob: number;
+  no_speech_prob: number;
+  compression_ratio: number;
+  status: string;
+  stitched_into: string | null;
+  flag_state: string;
+  flag_reasons: string;
+  corrected_text: string | null;
+};
+
+function rowToSentence(row: SentenceRow): Sentence {
+  return {
+    id: row.id,
+    chunkId: row.chunk_id,
+    audioStartOffsetMs: row.audio_start_offset_ms,
+    clockStartTimeMs: row.clock_start_time_ms,
+    textRaw: row.text_raw,
+    text: row.text,
+    avgLogprob: row.avg_logprob,
+    noSpeechProb: row.no_speech_prob,
+    compressionRatio: row.compression_ratio,
+    status: (row.status ?? "active") as SentenceStatus,
+    stitchedInto: row.stitched_into ?? null,
+    flagState: (row.flag_state ?? "unflagged") as SentenceFlagState,
+    flagReasons: JSON.parse(row.flag_reasons ?? "[]") as string[],
+    correctedText: row.corrected_text ?? null,
+  };
+}
+
+export function createSentence(
+  db: Database.Database,
+  sentence: Sentence,
+): Sentence {
+  db.prepare(
+    `INSERT INTO sentences (id, chunk_id, audio_start_offset_ms, clock_start_time_ms, text_raw, text,
+       avg_logprob, no_speech_prob, compression_ratio, status, stitched_into, flag_state, flag_reasons, corrected_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sentence.id,
+    sentence.chunkId,
+    sentence.audioStartOffsetMs,
+    sentence.clockStartTimeMs,
+    sentence.textRaw,
+    sentence.text,
+    sentence.avgLogprob,
+    sentence.noSpeechProb,
+    sentence.compressionRatio,
+    sentence.status,
+    sentence.stitchedInto,
+    sentence.flagState,
+    JSON.stringify(sentence.flagReasons),
+    sentence.correctedText,
+  );
+  return rowToSentence(
+    db.prepare("SELECT * FROM sentences WHERE id = ?").get(sentence.id) as SentenceRow,
+  );
+}
+
+export function listSentencesByChunk(db: Database.Database, chunkId: string): Sentence[] {
+  return (
+    db.prepare("SELECT * FROM sentences WHERE chunk_id = ?").all(chunkId) as SentenceRow[]
+  ).map(rowToSentence);
+}
+
+export function listSentencesByLecture(db: Database.Database, lectureId: string): Sentence[] {
+  return (
+    db
+      .prepare(
+        `SELECT s.* FROM sentences s
+         JOIN audio_chunks ac ON s.chunk_id = ac.id
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?
+         ORDER BY s.clock_start_time_ms ASC`,
+      )
+      .all(lectureId) as SentenceRow[]
+  ).map(rowToSentence);
 }
 
 // ── Merge helpers ────────────────────────────────────────────────────────────
