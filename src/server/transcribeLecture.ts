@@ -24,6 +24,7 @@ import {
   setAudioFileTranscriptionModel,
   createSentence,
 } from "./db.js";
+import { postProcessTranscript } from "./transcriptCleanup.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import { retainTerms } from "../shared/termRetention.js";
 import { tokenize } from "../shared/unknownTokens.js";
@@ -125,6 +126,7 @@ function capWords(words: string[], max: number): string[] {
 export type RawSentence = {
   text: string;
   audioStartOffsetMs: number;
+  audioEndOffsetMs: number;
   avgLogprob: number;
   noSpeechProb: number;
   compressionRatio: number;
@@ -157,6 +159,7 @@ function makeSentence(segs: WhisperSegment[], text: string): RawSentence {
   return {
     text,
     audioStartOffsetMs: segs[0]!.startMs,
+    audioEndOffsetMs: segs[segs.length - 1]!.endMs,
     avgLogprob: Math.min(...segs.map((s) => s.avgLogprob)),
     noSpeechProb: Math.max(...segs.map((s) => s.noSpeechProb)),
     compressionRatio: Math.max(...segs.map((s) => s.compressionRatio)),
@@ -236,7 +239,9 @@ export async function transcribeLecture(
           id: sentenceId,
           chunkId: chunk.id,
           audioStartOffsetMs: rs.audioStartOffsetMs,
+          audioEndOffsetMs: rs.audioEndOffsetMs,
           clockStartTimeMs: audioFile.recordingStartMs + rs.audioStartOffsetMs,
+          clockEndTimeMs: audioFile.recordingStartMs + rs.audioEndOffsetMs,
           textRaw: rs.text,
           text: rs.text,
           avgLogprob: rs.avgLogprob,
@@ -256,6 +261,7 @@ export async function transcribeLecture(
   if (failedChunkIds.length > 0) {
     updateTranscriptRunState(db, transcriptRun.id, "paused", failedChunkIds);
   } else {
+    postProcessTranscript(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, cfg.thresholds);
     updateTranscriptRunState(db, transcriptRun.id, "done");
     updateLectureStage(db, lectureId, "transcript-check");
   }

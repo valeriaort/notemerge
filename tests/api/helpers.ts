@@ -18,7 +18,7 @@ export interface TestServer {
   close: () => void;
 }
 
-export function startTestServer(providerOverrides?: Partial<Providers>): Promise<TestServer> {
+export function startTestServer(providerOverrides?: Partial<Providers>, cfgOverride?: Partial<Config>): Promise<TestServer> {
   return new Promise((resolve) => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "notemerge-test-"));
     const dbPath = path.join(dataDir, "notemerge.db");
@@ -41,6 +41,7 @@ export function startTestServer(providerOverrides?: Partial<Providers>): Promise
       contextMarginMs: 60000,
       mergeWindowConcurrency: 4,
       chunkTargetMs: 120000,
+      ...cfgOverride,
     };
     const app = createApp(db, dataDir, providers, cfg);
 
