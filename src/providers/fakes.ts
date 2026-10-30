@@ -185,13 +185,15 @@ export class FailableClassifier extends ScriptedClassifier {
 export class ScriptedWritingModel implements WritingModelProvider {
   private ops: WritingOperation[] = [];
   callCount = 0;
+  lastInput: unknown = null;
 
   setOperations(ops: WritingOperation[]): void {
     this.ops = [...ops];
   }
 
-  async generateOperations(_input: unknown): Promise<WritingOperation[]> {
+  async generateOperations(input: unknown): Promise<WritingOperation[]> {
     this.callCount++;
+    this.lastInput = input;
     return this.ops;
   }
 }

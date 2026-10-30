@@ -87,6 +87,30 @@ function sentenceText(s: Sentence): string {
   return s.correctedText ?? s.text;
 }
 
+// Resolve cited source IDs to their texts with a slide/transcript label
+function poolItemsFor(
+  sourceIds: string[],
+  slideMap: Map<string, ExtractedSlide>,
+  sentenceMap: Map<string, Sentence>,
+): Array<{ id: string; text: string; label: "slide" | "transcript" }> {
+  const items: Array<{ id: string; text: string; label: "slide" | "transcript" }> = [];
+  for (const id of sourceIds) {
+    const sentence = sentenceMap.get(id);
+    if (sentence) {
+      items.push({ id, text: sentenceText(sentence), label: "transcript" });
+      continue;
+    }
+    for (const slide of slideMap.values()) {
+      const bullet = slide.bullets.find((b) => b.id === id);
+      if (bullet) {
+        items.push({ id, text: bullet.text, label: "slide" });
+        break;
+      }
+    }
+  }
+  return items;
+}
+
 // Find which window a block belongs to (firstEditTime in [startMs, endMs))
 function findWindowForBlock(
   firstEditTime: number,
@@ -178,6 +202,7 @@ async function runHaikuAndBuildNote(
     sourceText: e.sourceText,
     noteId: e.noteId ?? undefined,
     retrievedNoteIds: e.retrievedNoteIds,
+    ...(e.type === "conflict" ? { poolItems: poolItemsFor(e.sourceIds, slideMap, sentenceMap) } : {}),
   }));
 
   const haikuTokenThreshold = config.haikuTokenThreshold ?? 100000;
@@ -275,7 +300,10 @@ async function runHaikuAndBuildNote(
           }
         }
       } else {
-        if (op.sourceIds.some((sid) => entry.sourceIds.includes(sid))) {
+        if (
+          entry.type !== "conflict" &&
+          op.sourceIds.some((sid) => entry.sourceIds.includes(sid))
+        ) {
           if (!answeredEntries.has(eid)) {
             entryId = eid;
             break;
@@ -725,12 +753,16 @@ function buildProcessWindow(
           const v = conflictVerdictInputs[i]!;
           if (v.effectiveLabel === "conflicts") {
             const block = inWindowBlocks[i]!;
+            // Cite only the pool items the classifier named as evidence; if it named
+            // none that exist in the pool, fall back to the whole pool so the flag is never uncited.
+            const evidence = (conflictAnswers[conflictQuestions[i]!.key]?.evidenceIds ?? [])
+              .filter((id) => allPoolSourceIds.includes(id));
             createEditListEntry(db, {
               id: uuidv4(),
               mergeRunId: mergeRun.id,
               type: "conflict",
               windowId: window.id,
-              sourceIds: allPoolSourceIds,
+              sourceIds: evidence.length > 0 ? [...new Set(evidence)] : allPoolSourceIds,
               noteId: block.id,
               retrievedNoteIds: [],
               sourceText: block.text,

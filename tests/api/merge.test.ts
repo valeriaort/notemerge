@@ -1856,3 +1856,92 @@ describe("Merge builds windows like the windows route (#32)", () => {
     }
   });
 });
+
+describe("Conflict evidence and Haiku pool texts (#33)", () => {
+  // Slide S001-B01 plus transcript sentence A01-T0001 in one window; B01 is flagged as conflicting
+  async function setup(
+    srv: TestServer,
+    classifier: ScriptedClassifier,
+    evidenceIds: string[] | undefined,
+  ): Promise<{ lectureId: string }> {
+    const t = Date.now();
+    const lecture = await createLecture(srv.url);
+    await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "The heart has three chambers", t));
+    await sealWithPdf(srv.url, lecture.id, SLIDE_PDF);
+    addSentence(srv, lecture.id, "A01-T0001", t + 1000, "The heart has four chambers");
+    classifier.addConflictAnswers({
+      "conflict:B01": { label: "conflicts", probability: 0.97, evidenceIds },
+    });
+    return { lectureId: lecture.id };
+  }
+
+  function conflictEntry(srv: TestServer, runId: string): { source_ids: string } {
+    return srv.db
+      .prepare("SELECT source_ids FROM edit_list_entries WHERE merge_run_id = ? AND type = 'conflict'")
+      .get(runId) as { source_ids: string };
+  }
+
+  it("a conflict cites only the evidence items the classifier named", async () => {
+    const { lectureId } = await setup(server, classifier, ["A01-T0001"]);
+    const { body } = await postMerge(server.url, lectureId);
+    const entry = conflictEntry(server, (body as MergeResponse).mergeRun.id);
+    expect(JSON.parse(entry.source_ids)).toEqual(["A01-T0001"]);
+
+    const note = (await getMergedNote(server.url, lectureId)).body as MergedNoteResponse;
+    const flag = note.blocks.find((b) => b.origin === "conflict")!;
+    expect(flag.citations.map((c) => c.sourceId)).toEqual(["A01-T0001"]);
+  });
+
+  it("Haiku receives pool items with id, text and slide/transcript label for conflict entries", async () => {
+    const { lectureId } = await setup(server, classifier, ["S001-B01", "A01-T0001"]);
+    await postMerge(server.url, lectureId);
+
+    const input = writingModel.lastInput as {
+      editList: Array<{
+        type: string;
+        noteId?: string;
+        sourceText: string;
+        poolItems?: Array<{ id: string; text: string; label: string }>;
+      }>;
+    };
+    const entry = input.editList.find((e) => e.type === "conflict")!;
+    expect(entry.noteId).toBe("B01");
+    expect(entry.sourceText).toBe("The heart has three chambers");
+    expect(entry.poolItems).toEqual([
+      { id: "S001-B01", text: "Important fact about anatomy", label: "slide" },
+      { id: "A01-T0001", text: "The heart has four chambers", label: "transcript" },
+    ]);
+  });
+
+  it("an addition op cannot satisfy a conflict entry", async () => {
+    const { lectureId } = await setup(server, classifier, ["A01-T0001"]);
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "Four chambers.", sourceIds: ["A01-T0001"] },
+    ]);
+    const { body } = await postMerge(server.url, lectureId);
+    const runId = (body as MergeResponse).mergeRun.id;
+
+    const op = server.db
+      .prepare("SELECT status, drop_reason FROM operations WHERE merge_run_id = ?")
+      .get(runId) as { status: string; drop_reason: string };
+    expect(op.status).toBe("dropped");
+    expect(op.drop_reason).toBe("No matching edit list entry");
+
+    const note = (await getMergedNote(server.url, lectureId)).body as MergedNoteResponse;
+    const flag = note.blocks.find((b) => b.origin === "conflict")!;
+    expect(flag.modelPlaced).toBe(false);
+  });
+
+  it("a rewrite citing IDs outside the conflict's evidence is rejected", async () => {
+    const { lectureId } = await setup(server, classifier, ["A01-T0001"]);
+    writingModel.setOperations([
+      { type: "rewrite", blockId: "B01", text: "Four chambers.", sourceIds: ["S001-B01"] },
+    ]);
+    const { body } = await postMerge(server.url, lectureId);
+    const op = server.db
+      .prepare("SELECT status, drop_reason FROM operations WHERE merge_run_id = ?")
+      .get((body as MergeResponse).mergeRun.id) as { status: string; drop_reason: string };
+    expect(op.status).toBe("dropped");
+    expect(op.drop_reason).toBe("Unknown source ID: S001-B01");
+  });
+});

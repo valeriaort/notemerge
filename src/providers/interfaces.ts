@@ -56,6 +56,8 @@ export interface WritingModelProvider {
       sourceText: string;
       noteId?: string;
       retrievedNoteIds?: string[];
+      // Conflict entries only: the cited pool items with their texts and source labels
+      poolItems?: Array<{ id: string; text: string; label: "slide" | "transcript" }>;
     }>;
   }): Promise<WritingOperation[]>;
 }

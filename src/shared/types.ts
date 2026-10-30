@@ -105,7 +105,11 @@ export type ConflictQuestion = {
 };
 
 export type CoverageAnswers = Record<string, { label: CoverageLabel; probability: number }>;
-export type ConflictAnswers = Record<string, { label: ConflictLabel; probability: number }>;
+// evidenceIds: the pool item IDs that support a "conflicts" verdict
+export type ConflictAnswers = Record<
+  string,
+  { label: ConflictLabel; probability: number; evidenceIds?: string[] }
+>;
 
 export type SlideMarker = {
   id: string;
