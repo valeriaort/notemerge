@@ -13,6 +13,7 @@ import { glossaryRoutes } from "./routes/glossary.js";
 import { windowRoutes } from "./routes/windows.js";
 import { mergeRoutes } from "./routes/merge.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
+import { transcriptCheckRoutes } from "./routes/transcriptCheck.js";
 import { reviewLockRoutes } from "./routes/review.js";
 import { exportRoutes } from "./routes/export.js";
 import { notionRoutes } from "./routes/notion.js";
@@ -38,6 +39,7 @@ export function createApp(
   app.use("/api/lectures", windowRoutes(db));
   app.use("/api/lectures", mergeRoutes(db, _providers, cfg));
   app.use("/api/lectures", transcriptionRoutes(db, _providers, cfg));
+  app.use("/api/lectures", transcriptCheckRoutes(db, _providers, cfg));
   app.use("/api/lectures", reviewLockRoutes(db));
   app.use("/api/lectures", exportRoutes(db, _providers, cfg));
   app.use("/api/subjects", subjectRoutes(db));

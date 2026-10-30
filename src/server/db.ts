@@ -855,7 +855,7 @@ export function createSentence(
 export type SentenceUpdate = Partial<Pick<Sentence,
   "text" | "avgLogprob" | "noSpeechProb" | "compressionRatio" |
   "status" | "stitchedInto" | "flagState" | "flagReasons" |
-  "audioEndOffsetMs" | "clockEndTimeMs"
+  "audioEndOffsetMs" | "clockEndTimeMs" | "correctedText"
 >>;
 
 export function updateSentence(
@@ -876,10 +876,84 @@ export function updateSentence(
   if (updates.flagReasons !== undefined) { setClauses.push("flag_reasons = ?"); values.push(JSON.stringify(updates.flagReasons)); }
   if (updates.audioEndOffsetMs !== undefined) { setClauses.push("audio_end_offset_ms = ?"); values.push(updates.audioEndOffsetMs); }
   if (updates.clockEndTimeMs !== undefined) { setClauses.push("clock_end_time_ms = ?"); values.push(updates.clockEndTimeMs); }
+  if (updates.correctedText !== undefined) { setClauses.push("corrected_text = ?"); values.push(updates.correctedText); }
 
   if (setClauses.length === 0) return;
   values.push(id);
   db.prepare(`UPDATE sentences SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+}
+
+export function getSentence(
+  db: Database.Database,
+  id: string,
+): Sentence | undefined {
+  const row = db.prepare("SELECT * FROM sentences WHERE id = ?").get(id) as SentenceRow | undefined;
+  return row ? rowToSentence(row) : undefined;
+}
+
+export function listFlaggedUnhandledSentencesByLecture(
+  db: Database.Database,
+  lectureId: string,
+): Sentence[] {
+  return (
+    db
+      .prepare(
+        `SELECT s.* FROM sentences s
+         JOIN audio_chunks ac ON s.chunk_id = ac.id
+         JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ? AND s.status = 'active' AND s.flag_state = 'flagged_unhandled'
+         ORDER BY s.clock_start_time_ms ASC`,
+      )
+      .all(lectureId) as SentenceRow[]
+  ).map(rowToSentence);
+}
+
+export function countHandledFlaggedSentencesByLecture(
+  db: Database.Database,
+  lectureId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM sentences s
+       JOIN audio_chunks ac ON s.chunk_id = ac.id
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE af.lecture_id = ? AND s.status = 'active'
+         AND s.flag_state IN ('corrected', 'advanced')`,
+    )
+    .get(lectureId) as { cnt: number };
+  return row.cnt;
+}
+
+export function countTotalFlaggedSentencesByLecture(
+  db: Database.Database,
+  lectureId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM sentences s
+       JOIN audio_chunks ac ON s.chunk_id = ac.id
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE af.lecture_id = ? AND s.status = 'active'
+         AND s.flag_state != 'unflagged'`,
+    )
+    .get(lectureId) as { cnt: number };
+  return row.cnt;
+}
+
+export function sentenceBelongsToLecture(
+  db: Database.Database,
+  sentenceId: string,
+  lectureId: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM sentences s
+       JOIN audio_chunks ac ON s.chunk_id = ac.id
+       JOIN audio_files af ON ac.audio_file_id = af.id
+       WHERE s.id = ? AND af.lecture_id = ?`,
+    )
+    .get(sentenceId, lectureId);
+  return row !== undefined;
 }
 
 export function getAudioChunk(
