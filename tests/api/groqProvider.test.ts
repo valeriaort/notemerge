@@ -241,6 +241,9 @@ describe("createProviders", () => {
     const { GroqSpeechToText: GroqClass } = await import("../../src/providers/groq.js");
     const config = {
       groq: { apiKey: "real-key" },
+      jev: { apiKey: "", model: "" },
+      haiku: { apiKey: "" },
+      notion: { clientId: "", clientSecret: "" },
       transcriptionModel: "whisper-large-v3",
     } as Parameters<typeof createProviders>[0];
 
@@ -253,6 +256,9 @@ describe("createProviders", () => {
     const { FakeSpeechToText } = await import("../../src/providers/fakes.js");
     const config = {
       groq: { apiKey: "" },
+      jev: { apiKey: "", model: "" },
+      haiku: { apiKey: "" },
+      notion: { clientId: "", clientSecret: "" },
       transcriptionModel: "whisper-large-v3",
     } as Parameters<typeof createProviders>[0];
 
