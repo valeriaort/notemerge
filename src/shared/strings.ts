@@ -86,6 +86,7 @@ export const strings = {
     noMergedNote: "No merged note yet.",
     lockedAfterReview: "Cannot change transcription settings after review decisions have been made.",
     playLabel: "Play",
+    checkByEarBadge: "Check by ear",
   },
   export: {
     unresolvedConflicts: "Export blocked: resolve all conflicts before exporting.",

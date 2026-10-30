@@ -1504,3 +1504,231 @@ describe("Merge with transcript sentences (#22)", () => {
     }
   });
 });
+
+describe("Low-confidence badge (#27)", () => {
+  it("addition citing only flagged_unhandled transcript sentence is low confidence", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Flagged transcript fact", {
+        flagState: "flagged_unhandled",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Added from flagged sentence", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const mergedNote = (body as MergeResponse).mergedNote;
+      const addition = mergedNote.find((b) => b.origin === "addition");
+      expect(addition).toBeDefined();
+      expect(addition!.lowConfidence).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("addition citing a handled (corrected) transcript sentence is not low confidence", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Corrected transcript fact", {
+        flagState: "corrected",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Added from corrected sentence", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const mergedNote = (body as MergeResponse).mergedNote;
+      const addition = mergedNote.find((b) => b.origin === "addition");
+      expect(addition).toBeDefined();
+      expect(addition!.lowConfidence).toBe(false);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("addition citing a handled (advanced) transcript sentence is not low confidence", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Advanced transcript fact", {
+        flagState: "advanced",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Added from advanced sentence", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const mergedNote = (body as MergeResponse).mergedNote;
+      const addition = mergedNote.find((b) => b.origin === "addition");
+      expect(addition).toBeDefined();
+      expect(addition!.lowConfidence).toBe(false);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("student block is never low confidence even if all transcript sentences are flagged_unhandled", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const srv = await startTestServer({ classifier: scriptedClassifier });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Flagged sentence", {
+        flagState: "flagged_unhandled",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "covered", probability: 0.95 },
+      });
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const mergedNote = (body as MergeResponse).mergedNote;
+      const studentBlock = mergedNote.find((b) => b.origin === "student");
+      expect(studentBlock).toBeDefined();
+      expect(studentBlock!.lowConfidence).toBe(false);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("badge clears when played=true is PATCHed and a final review state is set", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Flagged sentence", {
+        flagState: "flagged_unhandled",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Low confidence addition", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { body: mergeBody } = await postMerge(srv.url, lecture.id);
+      const addition = (mergeBody as MergeResponse).mergedNote.find((b) => b.origin === "addition");
+      expect(addition!.lowConfidence).toBe(true);
+
+      // Play the block — badge still shows until review decision
+      const playRes = await fetch(`${srv.url}/api/lectures/${lecture.id}/merged-note/${addition!.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ played: true }),
+      });
+      const playBody = await playRes.json() as { block: MergedBlock };
+      expect(playBody.block.played).toBe(true);
+      expect(playBody.block.lowConfidence).toBe(true);
+
+      // Keep the block — now badge clears
+      const keepRes = await fetch(`${srv.url}/api/lectures/${lecture.id}/merged-note/${addition!.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewState: "kept" }),
+      });
+      const keepBody = await keepRes.json() as { block: MergedBlock };
+      expect(keepBody.block.lowConfidence).toBe(false);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("conflict block citing only flagged_unhandled transcript sentence is low confidence", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note about topic", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Different transcript claim", {
+        flagState: "flagged_unhandled",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedClassifier.addConflictAnswers({
+        "conflict:B01": { label: "conflicts", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "rewrite", blockId: "B01", text: "Rewritten from transcript", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const mergedNote = (body as MergeResponse).mergedNote;
+      const conflict = mergedNote.find((b) => b.origin === "conflict");
+      expect(conflict).toBeDefined();
+      expect(conflict!.lowConfidence).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("export is not blocked by low-confidence blocks", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Flagged sentence", {
+        flagState: "flagged_unhandled",
+      });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Low confidence addition", sourceIds: ["A01-T0001"] },
+      ]);
+
+      await postMerge(srv.url, lecture.id);
+
+      // Final note should be accessible even with low-confidence blocks
+      const res = await fetch(`${srv.url}/api/lectures/${lecture.id}/final-note`);
+      expect(res.status).toBe(200);
+    } finally {
+      srv.close();
+    }
+  });
+});

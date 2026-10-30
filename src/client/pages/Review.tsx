@@ -109,7 +109,17 @@ function blockStyle(block: MergedBlock): React.CSSProperties {
   return { ...styles.block, ...styles.studentBlock };
 }
 
-function PlayButton({ lectureId, sentenceId }: { lectureId: string; sentenceId: string }) {
+function PlayButton({
+  lectureId,
+  blockId,
+  sentenceId,
+  onPlayed,
+}: {
+  lectureId: string;
+  blockId: string;
+  sentenceId: string;
+  onPlayed?: (updated: MergedBlock) => void;
+}) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   async function handlePlay() {
@@ -133,6 +143,16 @@ function PlayButton({ lectureId, sentenceId }: { lectureId: string; sentenceId: 
       });
       audio.addEventListener("ended", () => URL.revokeObjectURL(objectUrl));
       audio.load();
+
+      const patchRes = await fetch(`/api/lectures/${lectureId}/merged-note/${blockId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ played: true }),
+      });
+      if (patchRes.ok) {
+        const patchBody = await patchRes.json() as { block: MergedBlock };
+        onPlayed?.(patchBody.block);
+      }
     } catch {
       // ignore playback errors
     }
@@ -150,7 +170,17 @@ function PlayButton({ lectureId, sentenceId }: { lectureId: string; sentenceId: 
   );
 }
 
-function BlockView({ block, lectureId, hasAudio }: { block: MergedBlock; lectureId: string; hasAudio: boolean }) {
+function BlockView({
+  block,
+  lectureId,
+  hasAudio,
+  onBlockUpdated,
+}: {
+  block: MergedBlock;
+  lectureId: string;
+  hasAudio: boolean;
+  onBlockUpdated?: (updated: MergedBlock) => void;
+}) {
   const isAddition = block.origin === "addition" || block.origin === "partial_fix" || block.origin === "fallback";
   const isConflict = block.origin === "conflict";
   const transcriptCitations = block.citations.filter((c) => c.kind === "transcript");
@@ -167,6 +197,24 @@ function BlockView({ block, lectureId, hasAudio }: { block: MergedBlock; lecture
           {block.reviewState === "unresolved" ? "Conflict — unresolved" : `Conflict — ${block.reviewState}`}
         </div>
       )}
+      {block.lowConfidence && (
+        <div
+          data-testid="low-confidence-badge"
+          style={{
+            display: "inline-block",
+            fontSize: "0.72rem",
+            fontWeight: 600,
+            background: "#fff3cd",
+            border: "1px solid #ffc107",
+            color: "#856404",
+            borderRadius: 3,
+            padding: "0.1rem 0.4rem",
+            marginBottom: "0.2rem",
+          }}
+        >
+          {strings.review.checkByEarBadge}
+        </div>
+      )}
       <div>{block.text}</div>
       {(isAddition || isConflict) && block.citations.length > 0 && (
         <div style={styles.citation}>
@@ -176,7 +224,13 @@ function BlockView({ block, lectureId, hasAudio }: { block: MergedBlock; lecture
             </span>
           ))}
           {showPlay && transcriptCitations.map((c) => (
-            <PlayButton key={c.sourceId} lectureId={lectureId} sentenceId={c.sourceId} />
+            <PlayButton
+              key={c.sourceId}
+              lectureId={lectureId}
+              blockId={block.id}
+              sentenceId={c.sourceId}
+              onPlayed={onBlockUpdated}
+            />
           ))}
         </div>
       )}
@@ -334,7 +388,15 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
           <p>{strings.review.noMergedNote}</p>
         )}
         {!cleanPreview && blocks !== null && blocks.map((b) => (
-          <BlockView key={b.id} block={b} lectureId={lectureId} hasAudio={hasAudio} />
+          <BlockView
+            key={b.id}
+            block={b}
+            lectureId={lectureId}
+            hasAudio={hasAudio}
+            onBlockUpdated={(updated) =>
+              setBlocks((prev) => prev ? prev.map((x) => x.id === updated.id ? updated : x) : prev)
+            }
+          />
         ))}
       </div>
     </>

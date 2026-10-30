@@ -257,4 +257,6 @@ export interface MergedBlock {
   citations: Citation[];
   modelPlaced: boolean;
   reviewState: MergedBlockReviewState | null;
+  played: boolean;
+  lowConfidence: boolean;
 }

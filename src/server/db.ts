@@ -274,6 +274,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE sentences ADD COLUMN audio_end_offset_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE sentences ADD COLUMN clock_end_time_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
   return db;
 }
@@ -1301,6 +1302,7 @@ type MergedBlockRow = {
   citations: string;
   model_placed: number;
   review_state: string | null;
+  played: number;
 };
 
 function rowToMergedBlock(row: MergedBlockRow): MergedBlock {
@@ -1317,6 +1319,8 @@ function rowToMergedBlock(row: MergedBlockRow): MergedBlock {
     citations: JSON.parse(row.citations) as Citation[],
     modelPlaced: row.model_placed === 1,
     reviewState: row.review_state as MergedBlockReviewState | null,
+    played: (row.played ?? 0) === 1,
+    lowConfidence: false,
   };
 }
 
@@ -1325,8 +1329,8 @@ export function createMergedBlock(
   block: MergedBlock,
 ): MergedBlock {
   db.prepare(
-    `INSERT INTO merged_blocks (id, merge_run_id, position, window_id, origin, note_id, text, original_text, proposed_rewrite, citations, model_placed, review_state)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO merged_blocks (id, merge_run_id, position, window_id, origin, note_id, text, original_text, proposed_rewrite, citations, model_placed, review_state, played)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     block.id,
     block.mergeRunId,
@@ -1340,6 +1344,7 @@ export function createMergedBlock(
     JSON.stringify(block.citations),
     block.modelPlaced ? 1 : 0,
     block.reviewState ?? null,
+    block.played ? 1 : 0,
   );
   return rowToMergedBlock(
     db.prepare("SELECT * FROM merged_blocks WHERE id = ?").get(block.id) as MergedBlockRow,
@@ -1380,6 +1385,61 @@ export function updateMergedBlockText(
 ): MergedBlock | undefined {
   db.prepare("UPDATE merged_blocks SET text = ? WHERE id = ?").run(text, blockId);
   return getMergedBlock(db, blockId);
+}
+
+export function markMergedBlockPlayed(
+  db: Database.Database,
+  blockId: string,
+): void {
+  db.prepare("UPDATE merged_blocks SET played = 1 WHERE id = ?").run(blockId);
+}
+
+function computeBlockLowConfidence(
+  block: MergedBlock,
+  flagStates: Map<string, string>,
+): boolean {
+  if (block.origin === "student") return false;
+  const transcriptCites = block.citations.filter((c) => c.kind === "transcript");
+  if (transcriptCites.length === 0) return false;
+  if (block.citations.some((c) => c.kind === "slide")) return false;
+  if (!transcriptCites.every((c) => flagStates.get(c.sourceId) === "flagged_unhandled")) return false;
+  if (block.played) {
+    const isFinal =
+      block.origin === "conflict"
+        ? block.reviewState === "kept" || block.reviewState === "edited"
+        : block.reviewState === "kept" || block.reviewState === "reverted";
+    if (isFinal) return false;
+  }
+  return true;
+}
+
+export function withLowConfidence(
+  db: Database.Database,
+  blocks: MergedBlock[],
+): MergedBlock[] {
+  const transcriptIds = new Set<string>();
+  for (const block of blocks) {
+    if (block.origin === "student") continue;
+    for (const c of block.citations) {
+      if (c.kind === "transcript") transcriptIds.add(c.sourceId);
+    }
+  }
+
+  const flagStates = new Map<string, string>();
+  if (transcriptIds.size > 0) {
+    const placeholders = Array.from(transcriptIds).map(() => "?").join(",");
+    const rows = db.prepare(
+      `SELECT id, flag_state FROM sentences WHERE id IN (${placeholders})`,
+    ).all([...transcriptIds]) as { id: string; flag_state: string }[];
+    for (const row of rows) {
+      flagStates.set(row.id, row.flag_state);
+    }
+  }
+
+  return blocks.map((block) => ({
+    ...block,
+    lowConfidence: computeBlockLowConfidence(block, flagStates),
+  }));
 }
 
 export function hasReviewDecision(

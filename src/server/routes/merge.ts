@@ -10,6 +10,8 @@ import {
   getMergedBlock,
   updateMergedBlockReviewState,
   updateMergedBlockText,
+  markMergedBlockPlayed,
+  withLowConfidence,
 } from "../db.js";
 import type { MergedBlockReviewState } from "../../shared/types.js";
 import { mergeLecture, retryMergeLecture } from "../mergeLecture.js";
@@ -42,7 +44,7 @@ export function mergeRoutes(
 
     try {
       const mergeRun = await mergeLecture(db, lecture.id, providers, config);
-      const blocks = listMergedBlocks(db, mergeRun.id);
+      const blocks = withLowConfidence(db, listMergedBlocks(db, mergeRun.id));
       res.status(201).json({ mergeRun, mergedNote: blocks });
     } catch (err) {
       if (err instanceof Error && err.message === "ALREADY_MERGED") {
@@ -87,7 +89,7 @@ export function mergeRoutes(
       return;
     }
 
-    const blocks = listMergedBlocks(db, mergeRun.id);
+    const blocks = withLowConfidence(db, listMergedBlocks(db, mergeRun.id));
     res.json({ blocks });
   });
 
@@ -98,10 +100,15 @@ export function mergeRoutes(
       return;
     }
 
-    const { reviewState, text } = req.body as { reviewState?: unknown; text?: unknown };
+    const { reviewState, text, played } = req.body as { reviewState?: unknown; text?: unknown; played?: unknown };
 
-    if (reviewState === undefined && text === undefined) {
-      res.status(400).json({ error: "Provide reviewState or text." });
+    if (reviewState === undefined && text === undefined && played === undefined) {
+      res.status(400).json({ error: "Provide reviewState, text, or played." });
+      return;
+    }
+
+    if (played !== undefined && played !== true) {
+      res.status(400).json({ error: "played must be true." });
       return;
     }
 
@@ -135,13 +142,18 @@ export function mergeRoutes(
       }
     }
 
+    if (played === true) {
+      markMergedBlockPlayed(db, existing.id);
+    }
+
     // Explicit text update (post-E tweaks or editor changes)
     if (typeof text === "string") {
       updateMergedBlockText(db, existing.id, text);
     }
 
     const updated = getMergedBlock(db, existing.id);
-    res.json({ block: updated });
+    const [enriched] = withLowConfidence(db, [updated!]);
+    res.json({ block: enriched });
   });
 
   router.post("/:lectureId/merge/retry", async (req: Request, res: Response) => {
@@ -164,7 +176,8 @@ export function mergeRoutes(
 
     try {
       const updatedRun = await retryMergeLecture(db, lecture.id, providers, config);
-      const blocks = updatedRun.state === "done" ? listMergedBlocks(db, updatedRun.id) : [];
+      const rawBlocks = updatedRun.state === "done" ? listMergedBlocks(db, updatedRun.id) : [];
+      const blocks = updatedRun.state === "done" ? withLowConfidence(db, rawBlocks) : rawBlocks;
       res.status(200).json({ mergeRun: updatedRun, mergedNote: blocks });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";

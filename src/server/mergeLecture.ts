@@ -522,6 +522,8 @@ async function runHaikuAndBuildNote(
       citations: item.citations,
       modelPlaced: item.modelPlaced,
       reviewState: item.reviewState as MergedBlock["reviewState"],
+      played: false,
+      lowConfidence: false,
     };
     createMergedBlock(db, block);
   }
