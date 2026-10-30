@@ -4,6 +4,14 @@ import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
 import { ScriptedClassifier, ScriptedWritingModel, FailableClassifier } from "../../src/providers/fakes.js";
+import {
+  ensureDefaultUser,
+  createSubject,
+  sealLecture,
+  createAudioFile,
+  createAudioChunk,
+  createSentence,
+} from "../../src/server/db.js";
 
 // Builds a minimal valid multi-page PDF (one title + one bullet per page)
 function buildMultiSlidePdf(pages: Array<{ title: string; bullet: string }>): Buffer {
@@ -175,6 +183,47 @@ function oneBlockNotes(blockId: string, text: string, firstEditTime: number): ob
       [blockId]: { firstEditTime, lastEditTime: firstEditTime + 5 * 60 * 1000 },
     },
   };
+}
+
+// Seal a lecture without a presentation (notes+audio only)
+function sealWithoutSlides(srv: TestServer, lectureId: string): void {
+  const user = ensureDefaultUser(srv.db);
+  const subject = createSubject(srv.db, `subj-${lectureId}`, "Test Subject", user.id);
+  sealLecture(srv.db, lectureId, subject.id, null);
+}
+
+// Create a fake audio file + chunk + sentence in the DB for a sealed lecture.
+// Returns the sentence ID so tests can assert on it.
+function addSentence(
+  srv: TestServer,
+  lectureId: string,
+  sentenceId: string,
+  clockStartTimeMs: number,
+  text: string,
+  opts?: { flagState?: "unflagged" | "flagged_unhandled" | "corrected" | "advanced"; correctedText?: string },
+): void {
+  const afId = `af-${sentenceId}`;
+  const acId = `ac-${sentenceId}`;
+  createAudioFile(srv.db, afId, lectureId, 1, "/fake/audio.wav", clockStartTimeMs - 1000, 120000);
+  createAudioChunk(srv.db, acId, afId, 1, "/fake/chunk.wav", 0, 120000);
+  createSentence(srv.db, {
+    id: sentenceId,
+    chunkId: acId,
+    audioStartOffsetMs: 0,
+    audioEndOffsetMs: 2000,
+    clockStartTimeMs,
+    clockEndTimeMs: clockStartTimeMs + 2000,
+    textRaw: text,
+    text,
+    avgLogprob: -0.3,
+    noSpeechProb: 0.05,
+    compressionRatio: 1.1,
+    status: "active",
+    stitchedInto: null,
+    flagState: opts?.flagState ?? "unflagged",
+    flagReasons: [],
+    correctedText: opts?.correctedText ?? null,
+  });
 }
 
 let server: TestServer;
@@ -1206,5 +1255,252 @@ describe("Merge failure handling: pause and resume", () => {
       { method: "POST" },
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("Merge with transcript sentences (#22)", () => {
+  it("transcript sentence in its window enters coverage questions", async () => {
+    // The sentence's clockStartTimeMs falls inside the lecture window.
+    // Classifier returns missing for it → edit list entry with sentence ID.
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      // Sentence at t+1000 is inside the window [t, t+5min)
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Transcript fact about anatomy");
+
+      // Script the sentence key as missing so an edit list entry is created
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+      expect((body as MergeResponse).mergeRun.state).toBe("done");
+
+      // Verify edit list entry was created for the sentence
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{
+          type: string;
+          source_ids: string;
+          source_text: string;
+        }>;
+      const entry = editList.find((e) => JSON.parse(e.source_ids).includes("A01-T0001"));
+      expect(entry).toBeDefined();
+      expect(entry!.type).toBe("missing");
+      expect(entry!.source_text).toBe("Transcript fact about anatomy");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("margin sentences (outside window, within 1-minute) are context only and not judged", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: new ScriptedWritingModel() });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      // Sentence at t-30s is BEFORE the window but within 1-minute margin (contextMarginMs=60000)
+      addSentence(srv, lecture.id, "A01-T0001", t - 30000, "Margin sentence text");
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+
+      // No edit list entry should be created for the margin sentence
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{ source_ids: string }>;
+      const marginEntry = editList.find((e) => JSON.parse(e.source_ids).includes("A01-T0001"));
+      expect(marginEntry).toBeUndefined();
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("flagged_unhandled sentences still enter the pool", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: new ScriptedWritingModel() });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      // Flagged_unhandled sentence in window
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Flagged sentence text", { flagState: "flagged_unhandled" });
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{ source_ids: string }>;
+      const entry = editList.find((e) => JSON.parse(e.source_ids).includes("A01-T0001"));
+      expect(entry).toBeDefined();
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("notes+audio lecture (no slides) completes merge using transcript sentences", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Audio-only lecture fact");
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+      expect((body as MergeResponse).mergeRun.state).toBe("done");
+
+      // Verify the edit list entry has transcript (not slide) source
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{ source_ids: string; type: string }>;
+      expect(editList.length).toBeGreaterThan(0);
+      const entry = editList[0]!;
+      const sourceIds = JSON.parse(entry.source_ids) as string[];
+      expect(sourceIds[0]).toMatch(/^A/);
+      expect(entry.type).toBe("missing");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("slide vs transcript disagreement: conflict entry cites both source IDs", async () => {
+    const scriptedClassifier = new ScriptedClassifier();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: new ScriptedWritingModel() });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note that is wrong", t));
+      await sealWithPdf(srv.url, lecture.id, SLIDE_PDF);
+
+      // Add a transcript sentence in the same window
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Transcript says something different");
+
+      // Note block B01 conflicts with pool (slide bullet + transcript sentence)
+      scriptedClassifier.addConflictAnswers({
+        "conflict:B01": { label: "conflicts", probability: 0.97 },
+      });
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+
+      // Conflict edit list entry should cite both a slide source (S...) and transcript (A...)
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{
+          type: string;
+          source_ids: string;
+          note_id: string;
+        }>;
+      const conflictEntry = editList.find((e) => e.type === "conflict" && e.note_id === "B01");
+      expect(conflictEntry).toBeDefined();
+      const sourceIds = JSON.parse(conflictEntry!.source_ids) as string[];
+      expect(sourceIds.some((id) => id.startsWith("S"))).toBe(true);
+      expect(sourceIds.some((id) => id.startsWith("A"))).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("slide with no text is judged from transcript sentences only", async () => {
+    // Build a PDF with a text-less slide so bullets are empty for that slide's window
+    // but a transcript sentence in that window should still be judged.
+    const scriptedClassifier = new ScriptedClassifier();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: new ScriptedWritingModel() });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      // Sentence in window → should be judged even with no slides
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "Only transcript source");
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+      expect((body as MergeResponse).mergeRun.state).toBe("done");
+
+      const editList = srv.db
+        .prepare("SELECT * FROM edit_list_entries WHERE merge_run_id = ?")
+        .all((body as MergeResponse).mergeRun.id) as Array<{ source_ids: string }>;
+      expect(editList.some((e) => JSON.parse(e.source_ids as string).includes("A01-T0001"))).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("addition citation for transcript sentence has correct text and kind", async () => {
+    // When Haiku returns an add_after op with transcript sourceId, the merged block
+    // should have citation.kind=transcript and citation.text = the sentence text.
+    const scriptedClassifier = new ScriptedClassifier();
+    const scriptedWritingModel = new ScriptedWritingModel();
+    const srv = await startTestServer({ classifier: scriptedClassifier, writingModel: scriptedWritingModel });
+
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+
+      addSentence(srv, lecture.id, "A01-T0001", t + 1000, "The transcript fact");
+
+      scriptedClassifier.addCoverageAnswers({
+        "coverage:A01-T0001": { label: "missing", probability: 0.95 },
+      });
+
+      // Script Haiku to return an add_after op for the sentence
+      scriptedWritingModel.setOperations([
+        { type: "add_after", blockId: "B01", text: "Added from transcript", sourceIds: ["A01-T0001"] },
+      ]);
+
+      const { status, body } = await postMerge(srv.url, lecture.id);
+      expect(status).toBe(201);
+      const mergedNote = (body as MergeResponse).mergedNote;
+
+      const additionBlock = mergedNote.find((b) => b.origin === "addition");
+      expect(additionBlock).toBeDefined();
+      expect(additionBlock!.citations).toHaveLength(1);
+      const citation = additionBlock!.citations[0]!;
+      expect(citation.sourceId).toBe("A01-T0001");
+      expect(citation.kind).toBe("transcript");
+      expect(citation.text).toBe("The transcript fact");
+    } finally {
+      srv.close();
+    }
   });
 });

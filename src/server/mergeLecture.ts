@@ -10,6 +10,7 @@ import type {
   MergeRun,
   MergedBlock,
   NotesDocument,
+  Sentence,
   SlideWindow,
   WindowResult,
   WritingOperation,
@@ -27,6 +28,7 @@ import {
   listAbbreviationPairs,
   listEditListEntries,
   listMarkers,
+  listSentencesByLecture,
   saveVerdicts,
   updateLectureStage,
   updateMergeRunState,
@@ -80,6 +82,10 @@ function blockText(block: unknown): string {
 
 function blockId(block: unknown): string {
   return (block as { id: string }).id;
+}
+
+function sentenceText(s: Sentence): string {
+  return s.correctedText ?? s.text;
 }
 
 // Find which window a block belongs to (firstEditTime in [startMs, endMs))
@@ -146,6 +152,7 @@ async function runHaikuAndBuildNote(
   lectureId: string,
   windows: SlideWindow[],
   slideMap: Map<string, ExtractedSlide>,
+  sentenceMap: Map<string, Sentence>,
   notesData: NotesDocument,
   providers: Providers,
   config: Config,
@@ -356,6 +363,9 @@ async function runHaikuAndBuildNote(
           const slide = slideMap.get(slideId);
           text = slide?.bullets.find((b) => b.id === sid)?.text ?? "";
         }
+      } else {
+        const s = sentenceMap.get(sid);
+        text = s ? sentenceText(s) : "";
       }
       return { sourceId: sid, kind, text };
     });
@@ -454,6 +464,9 @@ async function runHaikuAndBuildNote(
               const slide = slideMap.get(slideId);
               text = slide?.bullets.find((b) => b.id === sid)?.text ?? "";
             }
+          } else {
+            const s = sentenceMap.get(sid);
+            text = s ? sentenceText(s) : "";
           }
           return { sourceId: sid, kind, text };
         });
@@ -520,6 +533,7 @@ function buildProcessWindow(
   allBlocks: unknown[],
   notesData: NotesDocument,
   slideMap: Map<string, ExtractedSlide>,
+  activeSentences: Sentence[],
   contextMarginMs: number,
   noiseThreshold: number,
   maxRetryAttempts: number,
@@ -538,12 +552,21 @@ function buildProcessWindow(
       }
     }
 
-    if (bullets.length === 0) return true;
-
-    const windowResult = existingWr ?? createWindowResult(db, uuidv4(), mergeRun.id, window.id);
-
     const marginStart = window.startMs - contextMarginMs;
     const marginEnd = window.endMs + contextMarginMs;
+
+    const inWindowSentences = activeSentences.filter(
+      (s) => s.clockStartTimeMs >= window.startMs && s.clockStartTimeMs < window.endMs,
+    );
+    const marginSentences = activeSentences.filter(
+      (s) =>
+        (s.clockStartTimeMs >= marginStart && s.clockStartTimeMs < window.startMs) ||
+        (s.clockStartTimeMs >= window.endMs && s.clockStartTimeMs <= marginEnd),
+    );
+
+    if (bullets.length === 0 && inWindowSentences.length === 0) return true;
+
+    const windowResult = existingWr ?? createWindowResult(db, uuidv4(), mergeRun.id, window.id);
 
     const abbrevPairs = listAbbreviationPairs(db);
     const retrievedBlocks: Array<{ id: string; text: string }> = [];
@@ -565,12 +588,21 @@ function buildProcessWindow(
       }
     }
 
-    const coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
-    const questions = bullets.map((b) => ({
-      key: `coverage:${b.id}`,
-      sourceId: b.id,
-      text: b.text,
-    }));
+    let coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
+    if (marginSentences.length > 0) {
+      coverageState +=
+        "\nTranscript context:\n" +
+        marginSentences.map((s) => `${s.id}: ${sentenceText(s)}`).join("\n");
+    }
+
+    const questions = [
+      ...bullets.map((b) => ({ key: `coverage:${b.id}`, sourceId: b.id, text: b.text })),
+      ...inWindowSentences.map((s) => ({
+        key: `coverage:${s.id}`,
+        sourceId: s.id,
+        text: sentenceText(s),
+      })),
+    ];
 
     // Coverage check (skip if already done)
     let coverageOk = windowResult.coverageStatus === "done";
@@ -603,17 +635,17 @@ function buildProcessWindow(
 
         for (let i = 0; i < verdictInputs.length; i++) {
           const v = verdictInputs[i]!;
-          const bullet = bullets[i]!;
+          const q = questions[i]!;
           if (v.effectiveLabel === "missing") {
             createEditListEntry(db, {
               id: uuidv4(),
               mergeRunId: mergeRun.id,
               type: "missing",
               windowId: window.id,
-              sourceIds: [bullet.id],
+              sourceIds: [q.sourceId],
               noteId: null,
               retrievedNoteIds: [],
-              sourceText: bullet.text,
+              sourceText: q.text,
             });
           } else if (v.effectiveLabel === "partially_covered") {
             createEditListEntry(db, {
@@ -621,10 +653,10 @@ function buildProcessWindow(
               mergeRunId: mergeRun.id,
               type: "partial",
               windowId: window.id,
-              sourceIds: [bullet.id],
+              sourceIds: [q.sourceId],
               noteId: null,
               retrievedNoteIds: retrievedBlocks.map((b) => b.id),
-              sourceText: bullet.text,
+              sourceText: q.text,
             });
           }
         }
@@ -646,7 +678,15 @@ function buildProcessWindow(
       return coverageOk;
     }
 
-    const poolState = "Pool:\n" + bullets.map((b) => `${b.id}: ${b.text}`).join("\n");
+    const poolParts: string[] = [
+      ...bullets.map((b) => `${b.id} [slide]: ${b.text}`),
+      ...inWindowSentences.map((s) => `${s.id} [transcript]: ${sentenceText(s)}`),
+    ];
+    const poolState = "Pool:\n" + poolParts.join("\n");
+    const allPoolSourceIds = [
+      ...bullets.map((b) => b.id),
+      ...inWindowSentences.map((s) => s.id),
+    ];
     const conflictQuestions = inWindowBlocks.map((b) => ({
       key: `conflict:${b.id}`,
       noteBlockId: b.id,
@@ -680,7 +720,6 @@ function buildProcessWindow(
         updateWindowResultConflict(db, windowResult.id, "done");
         conflictOk = true;
 
-        const allSourceIds = bullets.map((b) => b.id);
         for (let i = 0; i < conflictVerdictInputs.length; i++) {
           const v = conflictVerdictInputs[i]!;
           if (v.effectiveLabel === "conflicts") {
@@ -690,7 +729,7 @@ function buildProcessWindow(
               mergeRunId: mergeRun.id,
               type: "conflict",
               windowId: window.id,
-              sourceIds: allSourceIds,
+              sourceIds: allPoolSourceIds,
               noteId: block.id,
               retrievedNoteIds: [],
               sourceText: block.text,
@@ -730,11 +769,15 @@ export async function mergeLecture(
   }
 
   const slidesPath = path.join(lecture.dataDir, "slides.json");
-  if (!existsSync(slidesPath)) {
-    throw new Error("No slides found for this lecture");
+  let slides: ExtractedSlide[] = [];
+  if (existsSync(slidesPath)) {
+    slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
   }
-  const slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
   const slideMap = new Map<string, ExtractedSlide>(slides.map((s) => [s.id, s]));
+
+  const allSentences = listSentencesByLecture(db, lectureId);
+  const activeSentences = allSentences.filter((s) => s.status === "active");
+  const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
   const markers = listMarkers(db, lectureId);
@@ -751,7 +794,7 @@ export async function mergeLecture(
   const allBlocks = notesData.blocks as unknown[];
 
   const processWindow = buildProcessWindow(
-    db, mergeRun, allBlocks, notesData, slideMap,
+    db, mergeRun, allBlocks, notesData, slideMap, activeSentences,
     contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
   );
 
@@ -786,7 +829,7 @@ export async function mergeLecture(
 
   updateMergeRunState(db, mergeRun.id, "haiku");
 
-  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, notesData, providers, config);
+  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
 
   updateMergeRunState(db, mergeRun.id, "done");
   updateLectureStage(db, lectureId, "review");
@@ -808,9 +851,15 @@ export async function retryMergeLecture(
   if (mergeRun.state !== "paused") throw new Error("MERGE_NOT_PAUSED");
 
   const slidesPath = path.join(lecture.dataDir, "slides.json");
-  if (!existsSync(slidesPath)) throw new Error("No slides found for this lecture");
-  const slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
+  let slides: ExtractedSlide[] = [];
+  if (existsSync(slidesPath)) {
+    slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
+  }
   const slideMap = new Map<string, ExtractedSlide>(slides.map((s) => [s.id, s]));
+
+  const allSentences = listSentencesByLecture(db, lectureId);
+  const activeSentences = allSentences.filter((s) => s.status === "active");
+  const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
   const markers = listMarkers(db, lectureId);
@@ -832,7 +881,7 @@ export async function retryMergeLecture(
   updateMergeRunState(db, mergeRun.id, "running", []);
 
   const processWindow = buildProcessWindow(
-    db, mergeRun, allBlocks, notesData, slideMap,
+    db, mergeRun, allBlocks, notesData, slideMap, activeSentences,
     contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
   );
 
@@ -875,7 +924,7 @@ export async function retryMergeLecture(
 
   updateMergeRunState(db, mergeRun.id, "haiku");
 
-  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, notesData, providers, config);
+  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
 
   updateMergeRunState(db, mergeRun.id, "done");
   updateLectureStage(db, lectureId, "review");
