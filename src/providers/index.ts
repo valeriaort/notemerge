@@ -3,6 +3,7 @@ import type { Providers } from "./interfaces.js";
 import { FakeClassifier, FakeNotion, FakeWritingModel, FakeSpeechToText } from "./fakes.js";
 import { GroqSpeechToText } from "./groq.js";
 import { JevClassifier } from "./jev.js";
+import { AnthropicWritingModel } from "./haiku.js";
 
 export function createProviders(config: Config): Providers {
   const speechToText = config.groq.apiKey
@@ -13,10 +14,14 @@ export function createProviders(config: Config): Providers {
     ? new JevClassifier(config.jev.apiKey, config.jev.model)
     : new FakeClassifier();
 
+  const writingModel = config.haiku?.apiKey
+    ? new AnthropicWritingModel(config.haiku.apiKey, config.haiku.model)
+    : new FakeWritingModel();
+
   return {
     speechToText,
     classifier,
-    writingModel: new FakeWritingModel(),
+    writingModel,
     notion: new FakeNotion(),
   };
 }
