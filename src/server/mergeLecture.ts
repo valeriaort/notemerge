@@ -262,18 +262,28 @@ async function runHaikuAndBuildNote(
       const editListFirst = haikuEditList.filter((e) => firstHalfIds.has(e.windowId));
       const editListSecond = haikuEditList.filter((e) => !firstHalfIds.has(e.windowId));
 
-      const sealedFirst = sealedNotes.filter((n) => {
-        const meta = notesData.meta[n.id];
+      // Each call also gets every note its entries reference (retrieved margin notes can sit
+      // just across the boundary), so Haiku never cites a block it has not been shown.
+      const withReferencedNotes = (entries: typeof haikuEditList, inHalf: (noteId: string) => boolean) => {
+        const referenced = new Set(
+          entries.flatMap((e) => [...(e.retrievedNoteIds ?? []), ...(e.noteId ? [e.noteId] : [])]),
+        );
+        return sealedNotes.filter((n) => inHalf(n.id) || referenced.has(n.id));
+      };
+      const inFirstHalf = (noteId: string): boolean => {
+        const meta = notesData.meta[noteId];
         if (!meta?.firstEditTime) return true;
         const win = findWindowForBlock(meta.firstEditTime, windows);
         return !win || firstHalfIds.has(win.id);
-      });
-      const sealedSecond = sealedNotes.filter((n) => {
-        const meta = notesData.meta[n.id];
+      };
+      const inSecondHalf = (noteId: string): boolean => {
+        const meta = notesData.meta[noteId];
         if (!meta?.firstEditTime) return false;
         const win = findWindowForBlock(meta.firstEditTime, windows);
         return win !== undefined && !firstHalfIds.has(win.id);
-      });
+      };
+      const sealedFirst = withReferencedNotes(editListFirst, inFirstHalf);
+      const sealedSecond = withReferencedNotes(editListSecond, inSecondHalf);
 
       const windowRangesFirst = windowRanges.filter((w) => firstHalfIds.has(w.windowId));
       const windowRangesSecond = windowRanges.filter((w) => !firstHalfIds.has(w.windowId));
@@ -329,34 +339,30 @@ async function runHaikuAndBuildNote(
       }
     }
 
-    let entryId: string | null = null;
-    for (const [eid, entry] of entryById) {
+    const matchesEntry = (entry: (typeof editList)[number]): boolean => {
+      const sharesSource = op.sourceIds.some((sid) => entry.sourceIds.includes(sid));
       if (op.type === "rewrite") {
-        if (
-          entry.type === "conflict" &&
-          entry.noteId === op.blockId &&
-          op.sourceIds.some((sid) => entry.sourceIds.includes(sid))
-        ) {
-          if (!answeredEntries.has(eid)) {
-            entryId = eid;
-            break;
-          }
-        }
-      } else {
-        if (
-          entry.type !== "conflict" &&
-          op.sourceIds.some((sid) => entry.sourceIds.includes(sid))
-        ) {
-          if (!answeredEntries.has(eid)) {
-            entryId = eid;
-            break;
-          }
-        }
+        return entry.type === "conflict" && entry.noteId === op.blockId && sharesSource;
       }
+      return entry.type !== "conflict" && sharesSource;
+    };
+
+    let entryId: string | null = null;
+    let alreadyAnswered = false;
+    for (const [eid, entry] of entryById) {
+      if (!matchesEntry(entry)) continue;
+      if (answeredEntries.has(eid)) {
+        alreadyAnswered = true;
+        continue;
+      }
+      entryId = eid;
+      break;
     }
 
     if (entryId === null && dropReason === null) {
-      dropReason = "No matching edit list entry";
+      dropReason = alreadyAnswered
+        ? "Entry already answered by an earlier operation"
+        : "No matching edit list entry";
     }
 
     const status = dropReason ? "dropped" : "accepted";

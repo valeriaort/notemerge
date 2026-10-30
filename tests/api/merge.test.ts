@@ -359,6 +359,35 @@ describe("Merge verdict → merged note", () => {
     expect(addition.citations[0]!.kind).toBe("slide");
   });
 
+  it("an entry answered twice keeps the first answer and logs the second as already answered (#35)", async () => {
+    const lecture = await createLecture(server.url);
+    await putNotes(server.url, lecture.id, oneBlockNotes("B01", "Some notes", Date.now()));
+    await sealWithPdf(server.url, lecture.id, SLIDE_PDF);
+
+    classifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    writingModel.setOperations([
+      { type: "add_after", blockId: "B01", text: "first answer", sourceIds: ["S001-B01"] },
+      { type: "add_after", blockId: "B01", text: "second answer", sourceIds: ["S001-B01"] },
+    ]);
+
+    const { body } = await postMerge(server.url, lecture.id);
+    const runId = (body as MergeResponse).mergeRun.id;
+
+    const { body: noteBody } = await getMergedNote(server.url, lecture.id);
+    const additions = (noteBody as MergedNoteResponse).blocks.filter((b) => b.origin === "addition");
+    expect(additions.map((b) => b.text)).toEqual(["first answer"]);
+
+    const ops = server.db
+      .prepare("SELECT text, status, drop_reason FROM operations WHERE merge_run_id = ? ORDER BY rowid")
+      .all(runId) as Array<{ text: string; status: string; drop_reason: string | null }>;
+    expect(ops).toHaveLength(2);
+    expect(ops[0]).toMatchObject({ text: "first answer", status: "accepted" });
+    expect(ops[1]).toMatchObject({ text: "second answer", status: "dropped" });
+    expect(ops[1]!.drop_reason).toMatch(/already answered/i);
+  });
+
   it("covered verdict produces no addition block", async () => {
     const t = Date.now();
     const lecture = await createLecture(server.url);
@@ -964,6 +993,56 @@ describe("Haiku split above 100k tokens", () => {
 
   afterEach(() => {
     splitServer.close();
+  });
+
+  it("each split call receives every note its entries reference, even across the window boundary (#35)", async () => {
+    const t = Date.now();
+    const min = 60 * 1000;
+    const lecture = await createLecture(splitServer.url);
+    // 4-minute windows: window 1 = [t, t+4m), window 2 = [t+4m, ...). B02 sits in window 1 but
+    // within the 1-minute margin of window 2; B03 sits in window 2 but within window 1's margin.
+    const block = (id: string, text: string) => ({
+      id, type: "paragraph", content: [{ type: "text", text }], children: [],
+    });
+    const notes = {
+      blocks: [block("B01", "First block"), block("B02", "Second block"), block("B03", "Third block")],
+      meta: {
+        B01: { firstEditTime: t, lastEditTime: t },
+        B02: { firstEditTime: t + 3.5 * min, lastEditTime: t + 3.5 * min },
+        B03: { firstEditTime: t + 5 * min, lastEditTime: t + 6 * min },
+      },
+    };
+    await putNotes(splitServer.url, lecture.id, notes);
+    await sealWithPdf(splitServer.url, lecture.id, TWO_SLIDE_PDF);
+
+    splitClassifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "partially_covered", probability: 0.91 },
+      "coverage:S002-B01": { label: "partially_covered", probability: 0.91 },
+    });
+    splitWritingModel.setOperations([]);
+
+    const inputs: Array<{
+      sealedNotes: Array<{ id: string }>;
+      editList: Array<{ retrievedNoteIds?: string[]; noteId?: string }>;
+    }> = [];
+    const generate = splitWritingModel.generateOperations.bind(splitWritingModel);
+    splitWritingModel.generateOperations = async (input: unknown) => {
+      inputs.push(input as (typeof inputs)[number]);
+      return generate(input);
+    };
+
+    const { status } = await postMerge(splitServer.url, lecture.id);
+    expect(status).toBe(201);
+    expect(inputs).toHaveLength(2);
+
+    for (const input of inputs) {
+      const have = new Set(input.sealedNotes.map((n) => n.id));
+      for (const entry of input.editList) {
+        for (const id of [...(entry.retrievedNoteIds ?? []), ...(entry.noteId ? [entry.noteId] : [])]) {
+          expect(have.has(id)).toBe(true);
+        }
+      }
+    }
   });
 
   it("makes two Haiku calls when estimated tokens exceed threshold with multiple windows", async () => {
