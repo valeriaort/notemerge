@@ -2,15 +2,13 @@ import path from "path";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
 import { createApp } from "./app.js";
-import { createFakeProviders } from "../providers/fakes.js";
+import { createProviders } from "../providers/index.js";
 
 const dataDir = path.resolve(config.dataDir);
 const dbPath = path.join(dataDir, "notemerge.db");
 const db = openDb(dbPath);
 
-// In production, real providers would be wired in here.
-// For now, fakes are used; later tickets will inject real providers.
-const providers = createFakeProviders();
+const providers = createProviders(config);
 
 const app = createApp(db, dataDir, providers);
 
