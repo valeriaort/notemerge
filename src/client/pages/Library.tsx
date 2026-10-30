@@ -59,7 +59,7 @@ export function Library({ onOpen }: LibraryProps) {
                 {strings.library.lectureDate}:{" "}
                 {new Date(l.createdAt).toLocaleString()}
               </span>
-              <button style={styles.openBtn} onClick={() => onOpen(l.id)}>
+              <button style={styles.openBtn} onClick={() => onOpen(l.id)} data-testid="open-lecture-button">
                 {strings.library.openLecture}
               </button>
             </li>

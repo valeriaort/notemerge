@@ -5,6 +5,7 @@ import { Sources } from "./pages/Sources.js";
 import { SubjectSettings } from "./pages/SubjectSettings.js";
 import { Review } from "./pages/Review.js";
 import { TranscriptCheck } from "./pages/TranscriptCheck.js";
+import type { Lecture } from "../shared/types.js";
 
 type View =
   | { name: "library" }
@@ -38,7 +39,27 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  function openLecture(id: string) {
+  async function openLecture(id: string) {
+    try {
+      const res = await fetch(`/api/lectures/${id}`);
+      if (res.ok) {
+        const lecture = await res.json() as Lecture;
+        switch (lecture.stage) {
+          case "sources":
+          case "sealed":
+            window.location.hash = `/sources/${id}`;
+            return;
+          case "transcript-check":
+          case "merge":
+            window.location.hash = `/transcript-check/${id}`;
+            return;
+          case "review":
+          case "exported":
+            window.location.hash = `/review/${id}`;
+            return;
+        }
+      }
+    } catch { /* fall through to write */ }
     window.location.hash = `/write/${id}`;
   }
 

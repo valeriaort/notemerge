@@ -185,16 +185,78 @@ function BlockView({
   const isConflict = block.origin === "conflict";
   const transcriptCitations = block.citations.filter((c) => c.kind === "transcript");
   const showPlay = hasAudio && transcriptCitations.length > 0;
+
+  async function patchReviewState(reviewState: string) {
+    const res = await fetch(`/api/lectures/${lectureId}/merged-note/${block.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewState }),
+    });
+    if (res.ok) {
+      const body = await res.json() as { block: MergedBlock };
+      onBlockUpdated?.(body.block);
+    }
+  }
+
   return (
     <div style={blockStyle(block)} data-testid={`merged-block-${block.origin}`}>
       {isAddition && (
-        <div style={{ ...styles.label, color: "#1a7336" }}>
-          {block.origin === "partial_fix" ? strings.review.partialFixLabel : strings.review.additionLabel}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...styles.label, color: "#1a7336" }}>
+            {block.origin === "partial_fix" ? strings.review.partialFixLabel : strings.review.additionLabel}
+          </div>
+          {block.reviewState !== "reverted" && (
+            <button
+              data-testid="revert-button"
+              style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer" }}
+              onClick={() => void patchReviewState("reverted")}
+            >
+              Revert
+            </button>
+          )}
+          {block.reviewState === "reverted" && (
+            <button
+              data-testid="restore-button"
+              style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer" }}
+              onClick={() => void patchReviewState("kept")}
+            >
+              Restore
+            </button>
+          )}
         </div>
       )}
       {isConflict && (
-        <div style={{ ...styles.label, color: "#856404" }}>
-          {block.reviewState === "unresolved" ? "Conflict — unresolved" : `Conflict — ${block.reviewState}`}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...styles.label, color: "#856404" }}>
+            {block.reviewState === "unresolved" ? "Conflict — unresolved" : `Conflict — ${block.reviewState}`}
+          </div>
+          {block.reviewState === "unresolved" && (
+            <div style={{ display: "flex", gap: "0.25rem" }}>
+              <button
+                data-testid="keep-button"
+                style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer" }}
+                onClick={() => void patchReviewState("kept")}
+              >
+                K Keep
+              </button>
+              <button
+                data-testid="edit-button"
+                style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer" }}
+                onClick={() => void patchReviewState("edited")}
+              >
+                E Rewrite
+              </button>
+            </div>
+          )}
+          {block.reviewState !== "unresolved" && (
+            <button
+              data-testid="reopen-button"
+              style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer" }}
+              onClick={() => void patchReviewState("unresolved")}
+            >
+              Reopen
+            </button>
+          )}
         </div>
       )}
       {block.lowConfidence && (
@@ -255,6 +317,8 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
   const [hasAudio, setHasAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const blocksRef = useRef<MergedBlock[] | null>(null);
+  blocksRef.current = blocks;
 
   const hasUnresolved = blocks?.some(
     (b) => b.origin === "conflict" && b.reviewState === "unresolved",
@@ -292,6 +356,33 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
       .then((r) => r.json() as Promise<{ audioFiles: AudioFile[] }>)
       .then((data) => setHasAudio(data.audioFiles.length > 0))
       .catch(() => undefined);
+  }, [lectureId]);
+
+  useEffect(() => {
+    async function resolveFirstConflict(reviewState: string) {
+      const current = blocksRef.current;
+      if (!current) return;
+      const first = current.find((b) => b.origin === "conflict" && b.reviewState === "unresolved");
+      if (!first) return;
+      const res = await fetch(`/api/lectures/${lectureId}/merged-note/${first.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewState }),
+      });
+      if (res.ok) {
+        const body = await res.json() as { block: MergedBlock };
+        setBlocks((prev) => prev ? prev.map((x) => x.id === body.block.id ? body.block : x) : prev);
+      }
+    }
+
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "k" || e.key === "K") void resolveFirstConflict("kept");
+      if (e.key === "e" || e.key === "E") void resolveFirstConflict("edited");
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [lectureId]);
 
   useEffect(() => {
@@ -337,7 +428,7 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
         }
         #review-print-title { display: none; }
       `}</style>
-      <div style={styles.container}>
+      <div style={styles.container} data-testid="review-screen">
         <div style={styles.toolbar}>
           <button style={styles.backBtn} onClick={onBack}>
             ← Back
@@ -363,6 +454,7 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
               }}
               disabled={hasUnresolved}
               onClick={handleExportPdf}
+              data-testid="export-pdf-button"
             >
               {strings.export.pdfButton}
             </button>
