@@ -17,6 +17,16 @@ export class TranscriptionHttpError extends Error {
   }
 }
 
+export class WritingModelHttpError extends Error {
+  readonly statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "WritingModelHttpError";
+    this.statusCode = statusCode;
+  }
+}
+
 export class ClassifierRetryableError extends Error {
   readonly statusCode: number;
   readonly retryAfterMs: number;

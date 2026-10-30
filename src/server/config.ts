@@ -12,7 +12,7 @@ export interface Config {
   transcriptionModel: string;
   groq: { apiKey: string };
   jev: { apiKey: string; model: string };
-  haiku: { apiKey: string };
+  haiku: { apiKey: string; model?: string };
   notion: { clientId: string; clientSecret: string; accessToken?: string };
   thresholds: {
     whisperAvgLogprob: number;

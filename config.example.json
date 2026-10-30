@@ -4,7 +4,7 @@
   "transcriptionModel": "whisper-large-v3",
   "groq": { "apiKey": "" },
   "jev": { "apiKey": "", "model": "jev-1.14.0" },
-  "haiku": { "apiKey": "" },
+  "haiku": { "apiKey": "", "model": "claude-haiku-5-5" },
   "notion": { "clientId": "", "clientSecret": "" },
   "thresholds": {
     "whisperAvgLogprob": -1.0,
