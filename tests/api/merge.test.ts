@@ -11,6 +11,7 @@ import {
   createAudioFile,
   createAudioChunk,
   createSentence,
+  createMarker,
 } from "../../src/server/db.js";
 
 // Builds a minimal valid multi-page PDF (one title + one bullet per page)
@@ -1727,6 +1728,129 @@ describe("Low-confidence badge (#27)", () => {
       // Final note should be accessible even with low-confidence blocks
       const res = await fetch(`${srv.url}/api/lectures/${lecture.id}/final-note`);
       expect(res.status).toBe(200);
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+class RecordingClassifier extends ScriptedClassifier {
+  coverageKeys: string[] = [];
+
+  override async classifyCoverage(
+    state: string,
+    questions: Parameters<ScriptedClassifier["classifyCoverage"]>[1],
+  ): ReturnType<ScriptedClassifier["classifyCoverage"]> {
+    this.coverageKeys.push(...questions.map((q) => q.key));
+    return super.classifyCoverage(state, questions);
+  }
+}
+
+describe("Merge builds windows like the windows route (#32)", () => {
+  async function startRecording(): Promise<{ srv: TestServer; classifier: RecordingClassifier }> {
+    const classifier = new RecordingClassifier();
+    const srv = await startTestServer({ classifier, writingModel: new ScriptedWritingModel() });
+    return { srv, classifier };
+  }
+
+  it("a reassigned window changes which slide bullets are judged", async () => {
+    const { srv, classifier } = await startRecording();
+    try {
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", Date.now()));
+      await sealWithPdf(srv.url, lecture.id, TWO_SLIDE_PDF);
+
+      // One window, default-mapped to S001; reassign it to S002
+      const res = await fetch(`${srv.url}/api/lectures/${lecture.id}/windows/W001`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mappedSlides: ["S002"] }),
+      });
+      expect(res.status).toBe(200);
+
+      await postMerge(srv.url, lecture.id);
+      expect(classifier.coverageKeys).toContain("coverage:S002-B01");
+      expect(classifier.coverageKeys).not.toContain("coverage:S001-B01");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("a deleted window drops its slides from the judged pool", async () => {
+    const { srv, classifier } = await startRecording();
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      createMarker(srv.db, "M1", lecture.id, t + 2 * 60 * 1000, "B01");
+      await sealWithPdf(srv.url, lecture.id, TWO_SLIDE_PDF);
+
+      // Two windows: W001 → S001, W002 → S002. Deleting W001 drops S001.
+      const res = await fetch(`${srv.url}/api/lectures/${lecture.id}/windows/W001`, { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      await postMerge(srv.url, lecture.id);
+      expect(classifier.coverageKeys).toContain("coverage:S002-B01");
+      expect(classifier.coverageKeys).not.toContain("coverage:S001-B01");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("a transcript sentence before the first note lands in window 1 and is judged", async () => {
+    const { srv, classifier } = await startRecording();
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      // Audio starts 31s before the first note; the sentence sits in that audio-only time
+      addSentence(srv, lecture.id, "A01-T0001", t - 30000, "Before the first note");
+
+      await postMerge(srv.url, lecture.id);
+      expect(classifier.coverageKeys).toContain("coverage:A01-T0001");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("a transcript sentence after the last edit lands in the last window and is judged", async () => {
+    const { srv, classifier } = await startRecording();
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      sealWithoutSlides(srv, lecture.id);
+      // Last edit is t + 5min; the sentence is 30s later, inside the audio
+      addSentence(srv, lecture.id, "A01-T0001", t + 5 * 60 * 1000 + 30000, "After the last edit");
+
+      await postMerge(srv.url, lecture.id);
+      expect(classifier.coverageKeys).toContain("coverage:A01-T0001");
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("window IDs used by merge match those the transcription route reports", async () => {
+    const { srv } = await startRecording();
+    try {
+      const t = Date.now();
+      const lecture = await createLecture(srv.url);
+      await putNotes(srv.url, lecture.id, oneBlockNotes("B01", "My note", t));
+      createMarker(srv.db, "M1", lecture.id, t + 2 * 60 * 1000, "B01");
+      sealWithoutSlides(srv, lecture.id);
+      addSentence(srv, lecture.id, "A01-T0001", t - 30000, "Before the first note");
+      addSentence(srv, lecture.id, "A01-T0002", t + 3 * 60 * 1000, "Inside the second window");
+
+      const { body } = await postMerge(srv.url, lecture.id);
+      const runId = (body as MergeResponse).mergeRun.id;
+      const mergeIds = (srv.db
+        .prepare("SELECT window_id FROM window_results WHERE merge_run_id = ? ORDER BY window_id")
+        .all(runId) as Array<{ window_id: string }>).map((r) => r.window_id);
+
+      const res = await fetch(`${srv.url}/api/lectures/${lecture.id}/sentences`);
+      const { windows } = await res.json() as { windows: Array<{ id: string }> };
+      expect(mergeIds).toEqual(windows.map((w) => w.id).sort());
     } finally {
       srv.close();
     }

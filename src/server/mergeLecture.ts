@@ -27,7 +27,6 @@ import {
   getWindowResultByWindowId,
   listAbbreviationPairs,
   listEditListEntries,
-  listMarkers,
   listSentencesByLecture,
   saveVerdicts,
   updateLectureStage,
@@ -35,7 +34,7 @@ import {
   updateWindowResultCoverage,
   updateWindowResultConflict,
 } from "./db.js";
-import { computeWindows } from "../shared/slideWindows.js";
+import { resolveWindows } from "./lectureWindows.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import type { ExtractedSlide, SlideBullet } from "./pdfExtraction.js";
 
@@ -782,8 +781,7 @@ export async function mergeLecture(
   const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const markers = listMarkers(db, lectureId);
-  const windows = computeWindows(markers, notesData, slides.length);
+  const windows = resolveWindows(db, lecture, slides.length);
 
   const mergeRun = createMergeRun(db, uuidv4(), lectureId);
 
@@ -864,8 +862,7 @@ export async function retryMergeLecture(
   const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const markers = listMarkers(db, lectureId);
-  const windows = computeWindows(markers, notesData, slides.length);
+  const windows = resolveWindows(db, lecture, slides.length);
 
   const contextMarginMs = config.contextMarginMs ?? 60000;
   const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;

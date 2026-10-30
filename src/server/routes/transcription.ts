@@ -9,7 +9,6 @@ import {
   listSentencesByLecture,
   listAudioFiles,
   getWindowOverrides,
-  listMarkers,
   discardTranscript,
   setLectureTranscriptionModelOverride,
   listFailedChunksWithDetails,
@@ -18,7 +17,7 @@ import {
   hasReviewDecision,
 } from "../db.js";
 import { transcribeLecture } from "../transcribeLecture.js";
-import { computeWindows } from "../../shared/slideWindows.js";
+import { resolveWindows } from "../lectureWindows.js";
 import { strings } from "../../shared/strings.js";
 import type { NotesDocument, Sentence, WindowOverride } from "../../shared/types.js";
 
@@ -158,23 +157,7 @@ export function transcriptionRoutes(
 
     const sentences = listSentencesByLecture(db, lecture.id);
 
-    // Compute windows so we can assign sentences
-    const notesDoc = JSON.parse(lecture.notesData) as NotesDocument;
-    const markers = listMarkers(db, lecture.id);
-    const audioFiles = listAudioFiles(db, lecture.id);
-
-    const audioBounds = audioFiles.length > 0 ? {
-      startMs: Math.min(...audioFiles.map((af) => af.recordingStartMs)),
-      endMs: Math.max(...audioFiles.map((af) => af.recordingStartMs + af.durationMs)),
-    } : undefined;
-
-    const storedOverrides = getWindowOverrides(db, lecture.id);
-    let windows;
-    if (storedOverrides !== null) {
-      windows = (storedOverrides as WindowOverride[]).map((o) => ({ ...o, blockIds: [] as string[] }));
-    } else {
-      windows = computeWindows(markers, notesDoc, undefined, audioBounds);
-    }
+    const windows = resolveWindows(db, lecture);
 
     // Assign each sentence to the window containing its clockStartTimeMs
     const sentencesWithWindow = sentences.map((s: Sentence) => {

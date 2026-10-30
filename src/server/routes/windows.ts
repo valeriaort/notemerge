@@ -11,6 +11,7 @@ import {
   saveWindowOverrides,
 } from "../db.js";
 import { computeWindows } from "../../shared/slideWindows.js";
+import { getAudioBounds, assignBlockIds, resolveWindows } from "../lectureWindows.js";
 import { strings } from "../../shared/strings.js";
 import type { NotesDocument, SlideWindow, WindowOverride } from "../../shared/types.js";
 import type { ExtractedSlide } from "../pdfExtraction.js";
@@ -32,38 +33,6 @@ function toOverrides(windows: SlideWindow[]): WindowOverride[] {
     endMs: w.endMs,
     mappedSlides: w.mappedSlides,
   }));
-}
-
-function assignBlockIds(
-  overrides: WindowOverride[],
-  notesData: NotesDocument,
-): SlideWindow[] {
-  const result: SlideWindow[] = overrides.map((o) => ({ ...o, blockIds: [] }));
-  for (const [blockId, meta] of Object.entries(notesData.meta)) {
-    if (meta.firstEditTime === undefined) continue;
-    const t = meta.firstEditTime;
-    let target: SlideWindow | undefined;
-    for (const w of result) {
-      if (w.startMs <= t) target = w;
-      else break;
-    }
-    if (target) target.blockIds.push(blockId);
-  }
-  return result;
-}
-
-// Audio start/end become part of the lecture bounds (spec: lecture start/end include audio)
-function getAudioBounds(
-  db: Database.Database,
-  lectureId: string,
-): { startMs: number; endMs: number } | undefined {
-  const audioFiles = listAudioFiles(db, lectureId);
-  if (audioFiles.length === 0) return undefined;
-  const startMs = Math.min(...audioFiles.map((af) => af.recordingStartMs));
-  const endMs = Math.max(
-    ...audioFiles.map((af) => af.recordingStartMs + af.durationMs),
-  );
-  return { startMs, endMs };
 }
 
 // Returns the current override state, initialising from computed windows on first use
@@ -91,19 +60,8 @@ export function windowRoutes(db: Database.Database): Router {
       return;
     }
 
-    const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-    const markers = listMarkers(db, lecture.id);
     const slideCount = getSlideCount(lecture.dataDir);
-
-    const audioBounds = getAudioBounds(db, lecture.id);
-
-    const storedOverrides = getWindowOverrides(db, lecture.id);
-    let windows: SlideWindow[];
-    if (storedOverrides !== null) {
-      windows = assignBlockIds(storedOverrides, notesData);
-    } else {
-      windows = computeWindows(markers, notesData, slideCount, audioBounds);
-    }
+    const windows = resolveWindows(db, lecture, slideCount);
 
     let notice: string | undefined;
     if (slideCount !== undefined && windows.length !== slideCount) {
