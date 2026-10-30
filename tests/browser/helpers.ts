@@ -4,6 +4,7 @@ import path from "path";
 import { openDb } from "../../src/server/db.js";
 import { createApp } from "../../src/server/app.js";
 import { createFakeProviders } from "../../src/providers/fakes.js";
+import type { Providers } from "../../src/providers/interfaces.js";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import type { Page } from "@playwright/test";
@@ -22,12 +23,12 @@ export interface BrowserTestServer {
  * The server serves the built React client from dist/client. Run
  * `npm run build:client` (or `npm run test:browser` which does it) first.
  */
-export function startBrowserTestServer(): Promise<BrowserTestServer> {
+export function startBrowserTestServer(providerOverrides?: Partial<Providers>): Promise<BrowserTestServer> {
   return new Promise((resolve) => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "notemerge-browser-"));
     const dbPath = path.join(dataDir, "notemerge.db");
     const db = openDb(dbPath);
-    const providers = createFakeProviders();
+    const providers = { ...createFakeProviders(), ...providerOverrides };
     const app = createApp(db, dataDir, providers);
 
     const server: Server = app.listen(0, () => {
