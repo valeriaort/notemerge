@@ -1249,6 +1249,72 @@ describe("Merge failure handling: pause and resume", () => {
     expect(res.status).toBe(409);
   });
 
+  it("a Haiku failure pauses the merge; retry re-runs only Haiku until it succeeds (#34)", async () => {
+    let haikuCalls = 0;
+    const flakyWritingModel = new ScriptedWritingModel();
+    flakyWritingModel.setOperations([]);
+    const generate = flakyWritingModel.generateOperations.bind(flakyWritingModel);
+    flakyWritingModel.generateOperations = async (input: unknown) => {
+      haikuCalls++;
+      if (haikuCalls <= 2) throw new Error("Anthropic 529: overloaded");
+      return generate(input);
+    };
+
+    let coverageCalls = 0;
+    const countingClassifier = new ScriptedClassifier();
+    countingClassifier.addCoverageAnswers({
+      "coverage:S001-B01": { label: "missing", probability: 0.98 },
+    });
+    const classify = countingClassifier.classifyCoverage.bind(countingClassifier);
+    countingClassifier.classifyCoverage = async (state, questions) => {
+      coverageCalls++;
+      return classify(state, questions);
+    };
+
+    server.close();
+    const freshServer = await startTestServer({
+      classifier: countingClassifier,
+      writingModel: flakyWritingModel,
+    });
+
+    try {
+      const lecture = await createLecture(freshServer.url);
+      await putNotes(freshServer.url, lecture.id, oneBlockNotes("B01", "note", Date.now()));
+      await sealWithPdf(freshServer.url, lecture.id, SLIDE_PDF);
+
+      // First Haiku failure: the merge pauses with no failed windows, not a 500 or a stuck run
+      const first = await postMerge(freshServer.url, lecture.id);
+      expect(first.status).toBe(201);
+      expect((first.body as MergeResponse).mergeRun.state).toBe("paused");
+      expect((first.body as MergeResponse).mergeRun.failedWindowIds).toHaveLength(0);
+      expect(haikuCalls).toBe(1);
+      const jevCallsAfterFirst = coverageCalls;
+
+      const status = await getMerge(freshServer.url, lecture.id);
+      expect((status.body as MergeStatusResponse).mergeRun.state).toBe("paused");
+
+      // Second failure, this time on the retry path: still paused
+      const retryUrl = `${freshServer.url}/api/lectures/${lecture.id}/merge/retry`;
+      const second = await fetch(retryUrl, { method: "POST" });
+      expect(second.status).toBe(200);
+      expect(((await second.json()) as { mergeRun: MergeRun }).mergeRun.state).toBe("paused");
+      expect(haikuCalls).toBe(2);
+
+      // Third attempt succeeds and completes the merge
+      const third = await fetch(retryUrl, { method: "POST" });
+      const thirdBody = (await third.json()) as { mergeRun: MergeRun; mergedNote: MergedBlock[] };
+      expect(third.status).toBe(200);
+      expect(thirdBody.mergeRun.state).toBe("done");
+      expect(haikuCalls).toBe(3);
+      expect(thirdBody.mergedNote.some((b) => b.origin === "addition" || b.origin === "fallback")).toBe(true);
+
+      // Jev is never re-run: every window already finished
+      expect(coverageCalls).toBe(jevCallsAfterFirst);
+    } finally {
+      freshServer.close();
+    }
+  });
+
   it("POST /merge/retry returns 404 when no merge run exists", async () => {
     const lecture = await createLecture(server.url);
     const res = await fetch(

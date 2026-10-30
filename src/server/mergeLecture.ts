@@ -169,6 +169,41 @@ type MergedListItem = {
   originalPos: number;
 };
 
+// A failed Haiku call is not a verdict: it pauses the run so retry can re-run only this step.
+class WritingModelFailure extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "WritingModelFailure";
+  }
+}
+
+async function runHaikuStep(
+  db: Database.Database,
+  mergeRun: MergeRun,
+  lectureId: string,
+  windows: SlideWindow[],
+  slideMap: Map<string, ExtractedSlide>,
+  sentenceMap: Map<string, Sentence>,
+  notesData: NotesDocument,
+  providers: Providers,
+  config: Config,
+): Promise<MergeRun> {
+  updateMergeRunState(db, mergeRun.id, "haiku");
+
+  try {
+    await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
+  } catch (err) {
+    if (!(err instanceof WritingModelFailure)) throw err;
+    console.warn(`Merge paused: Haiku call failed (${err.message})`);
+    updateMergeRunState(db, mergeRun.id, "paused", []);
+    return getMergeRunByLectureId(db, lectureId)!;
+  }
+
+  updateMergeRunState(db, mergeRun.id, "done");
+  updateLectureStage(db, lectureId, "review");
+  return getMergeRunByLectureId(db, lectureId)!;
+}
+
 async function runHaikuAndBuildNote(
   db: Database.Database,
   mergeRun: MergeRun,
@@ -208,6 +243,14 @@ async function runHaikuAndBuildNote(
   const haikuTokenThreshold = config.haikuTokenThreshold ?? 100000;
   const haikuInput = { sealedNotes, windowRanges, editList: haikuEditList };
 
+  const generateOperations = async (input: typeof haikuInput): Promise<WritingOperation[]> => {
+    try {
+      return await providers.writingModel.generateOperations(input);
+    } catch (err) {
+      throw new WritingModelFailure(err);
+    }
+  };
+
   let rawOps: WritingOperation[] = [];
   if (editList.length > 0) {
     const estimatedTokens = JSON.stringify(haikuInput).length / 4;
@@ -237,7 +280,7 @@ async function runHaikuAndBuildNote(
 
       const ops1 =
         editListFirst.length > 0
-          ? await providers.writingModel.generateOperations({
+          ? await generateOperations({
               sealedNotes: sealedFirst,
               windowRanges: windowRangesFirst,
               editList: editListFirst,
@@ -245,7 +288,7 @@ async function runHaikuAndBuildNote(
           : [];
       const ops2 =
         editListSecond.length > 0
-          ? await providers.writingModel.generateOperations({
+          ? await generateOperations({
               sealedNotes: sealedSecond,
               windowRanges: windowRangesSecond,
               editList: editListSecond,
@@ -253,7 +296,7 @@ async function runHaikuAndBuildNote(
           : [];
       rawOps = [...ops1, ...ops2];
     } else {
-      rawOps = await providers.writingModel.generateOperations(haikuInput);
+      rawOps = await generateOperations(haikuInput);
     }
   }
 
@@ -859,14 +902,7 @@ export async function mergeLecture(
     return getMergeRunByLectureId(db, lectureId)!;
   }
 
-  updateMergeRunState(db, mergeRun.id, "haiku");
-
-  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
-
-  updateMergeRunState(db, mergeRun.id, "done");
-  updateLectureStage(db, lectureId, "review");
-
-  return getMergeRunByLectureId(db, lectureId)!;
+  return runHaikuStep(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
 }
 
 export async function retryMergeLecture(
@@ -953,12 +989,5 @@ export async function retryMergeLecture(
     return getMergeRunByLectureId(db, lectureId)!;
   }
 
-  updateMergeRunState(db, mergeRun.id, "haiku");
-
-  await runHaikuAndBuildNote(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
-
-  updateMergeRunState(db, mergeRun.id, "done");
-  updateLectureStage(db, lectureId, "review");
-
-  return getMergeRunByLectureId(db, lectureId)!;
+  return runHaikuStep(db, mergeRun, lectureId, windows, slideMap, sentenceMap, notesData, providers, config);
 }
