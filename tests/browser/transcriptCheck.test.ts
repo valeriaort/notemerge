@@ -91,7 +91,10 @@ async function seedTranscriptCheckLecture(
 let srv: BrowserTestServer;
 let speechToText: ScriptedSpeechToText;
 
-test.beforeAll(async () => {
+// A fresh server (and DB) per test: chunk/sentence ids (e.g. "A01-C001") are
+// unique within a single lecture's data, so each test seeds into its own DB —
+// matching the API test harness, which starts a fresh server per test.
+test.beforeEach(async () => {
   speechToText = new ScriptedSpeechToText();
   // Produce 2 flagged sentences (bad avgLogprob)
   speechToText.setDefaultSegments([
@@ -101,7 +104,7 @@ test.beforeAll(async () => {
   srv = await startBrowserTestServer({ speechToText });
 });
 
-test.afterAll(() => {
+test.afterEach(() => {
   srv.close();
 });
 
@@ -144,6 +147,10 @@ test("Space key plays audio (fake audio)", async ({ page }) => {
 });
 
 test("Enter advances a flagged sentence", async ({ page }) => {
+  // Single flagged sentence so one Enter clears the queue and auto-starts the merge.
+  speechToText.setDefaultSegments([
+    { startMs: 0, endMs: 1000, text: "Posible error uno.", avgLogprob: -1.5, noSpeechProb: 0.1, compressionRatio: 1.0 },
+  ]);
   const { lectureId, sentences } = await seedTranscriptCheckLecture(srv.url, 1);
   const firstId = sentences[0]!.id;
 
@@ -254,6 +261,10 @@ test("Skip button jumps to merge", async ({ page }) => {
 });
 
 test("merge starts by itself when queue is clear", async ({ page }) => {
+  // Single flagged sentence so one Enter empties the queue and triggers auto-merge.
+  speechToText.setDefaultSegments([
+    { startMs: 0, endMs: 1000, text: "Posible error uno.", avgLogprob: -1.5, noSpeechProb: 0.1, compressionRatio: 1.0 },
+  ]);
   const { lectureId } = await seedTranscriptCheckLecture(srv.url, 1);
 
   await page.goto(`${srv.url}/#/transcript-check/${lectureId}`);
