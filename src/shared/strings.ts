@@ -85,6 +85,7 @@ export const strings = {
     partialFixLabel: "Partial fix",
     noMergedNote: "No merged note yet.",
     lockedAfterReview: "Cannot change transcription settings after review decisions have been made.",
+    playLabel: "Play",
   },
   export: {
     unresolvedConflicts: "Export blocked: resolve all conflicts before exporting.",

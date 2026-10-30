@@ -13,6 +13,7 @@ import {
   listMarkers,
   createAudioFile,
   createAudioChunk,
+  listAudioFiles,
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
 import { extractSlidesFromPdf } from "../pdfExtraction.js";
@@ -32,6 +33,17 @@ export function audioSourcesRoutes(
   chunkTargetMs: number = config.chunkTargetMs ?? 120000,
 ): Router {
   const router = Router();
+
+  // GET /:id/audio-files — list audio files for a lecture (used by review to check hasAudio)
+  router.get("/:id/audio-files", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["id"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+    const audioFiles = listAudioFiles(db, lecture.id);
+    res.json({ audioFiles });
+  });
 
   // Returns the suggested recording start time for the first audio file (first slide marker).
   router.get("/:id/audio-start-suggestion", (req: Request, res: Response) => {

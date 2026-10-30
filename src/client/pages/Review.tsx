@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import type { MergedBlock, Lecture } from "../../shared/types.js";
+import { useState, useEffect, useRef } from "react";
+import type { MergedBlock, Lecture, AudioFile } from "../../shared/types.js";
 import { strings } from "../../shared/strings.js";
 
 interface ReviewProps {
@@ -109,9 +109,52 @@ function blockStyle(block: MergedBlock): React.CSSProperties {
   return { ...styles.block, ...styles.studentBlock };
 }
 
-function BlockView({ block }: { block: MergedBlock }) {
+function PlayButton({ lectureId, sentenceId }: { lectureId: string; sentenceId: string }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  async function handlePlay() {
+    const url = `/api/lectures/${lectureId}/sentences/${sentenceId}/audio-clip`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const startMs = Number(res.headers.get("x-sentence-start-ms") ?? "0");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      const audio = new Audio(objectUrl);
+      audioRef.current = audio;
+      const startSec = Math.max(0, startMs / 1000 - 3);
+      audio.addEventListener("loadedmetadata", () => {
+        audio.currentTime = startSec;
+        void audio.play();
+      });
+      audio.addEventListener("ended", () => URL.revokeObjectURL(objectUrl));
+      audio.load();
+    } catch {
+      // ignore playback errors
+    }
+  }
+
+  return (
+    <button
+      data-testid="review-play-button"
+      style={{ marginLeft: "0.5rem", fontSize: "0.78rem", padding: "0.1rem 0.4rem" }}
+      onClick={() => void handlePlay()}
+      title={strings.review.playLabel}
+    >
+      ▶ {strings.review.playLabel}
+    </button>
+  );
+}
+
+function BlockView({ block, lectureId, hasAudio }: { block: MergedBlock; lectureId: string; hasAudio: boolean }) {
   const isAddition = block.origin === "addition" || block.origin === "partial_fix" || block.origin === "fallback";
   const isConflict = block.origin === "conflict";
+  const transcriptCitations = block.citations.filter((c) => c.kind === "transcript");
+  const showPlay = hasAudio && transcriptCitations.length > 0;
   return (
     <div style={blockStyle(block)} data-testid={`merged-block-${block.origin}`}>
       {isAddition && (
@@ -131,6 +174,9 @@ function BlockView({ block }: { block: MergedBlock }) {
             <span key={c.sourceId}>
               [{c.sourceId}] {c.text}
             </span>
+          ))}
+          {showPlay && transcriptCitations.map((c) => (
+            <PlayButton key={c.sourceId} lectureId={lectureId} sentenceId={c.sourceId} />
           ))}
         </div>
       )}
@@ -152,6 +198,7 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
   const [cleanPreview, setCleanPreview] = useState(false);
   const [lecture, setLecture] = useState<Lecture | null>(null);
   const [subjectName, setSubjectName] = useState<string>("");
+  const [hasAudio, setHasAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -183,6 +230,13 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
             });
         }
       })
+      .catch(() => undefined);
+  }, [lectureId]);
+
+  useEffect(() => {
+    fetch(`/api/lectures/${lectureId}/audio-files`)
+      .then((r) => r.json() as Promise<{ audioFiles: AudioFile[] }>)
+      .then((data) => setHasAudio(data.audioFiles.length > 0))
       .catch(() => undefined);
   }, [lectureId]);
 
@@ -280,7 +334,7 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
           <p>{strings.review.noMergedNote}</p>
         )}
         {!cleanPreview && blocks !== null && blocks.map((b) => (
-          <BlockView key={b.id} block={b} />
+          <BlockView key={b.id} block={b} lectureId={lectureId} hasAudio={hasAudio} />
         ))}
       </div>
     </>
