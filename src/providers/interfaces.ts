@@ -27,6 +27,16 @@ export class WritingModelHttpError extends Error {
   }
 }
 
+export class NotionHttpError extends Error {
+  readonly statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "NotionHttpError";
+    this.statusCode = statusCode;
+  }
+}
+
 export class ClassifierRetryableError extends Error {
   readonly statusCode: number;
   readonly retryAfterMs: number;

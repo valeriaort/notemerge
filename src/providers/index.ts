@@ -4,6 +4,7 @@ import { FakeClassifier, FakeNotion, FakeWritingModel, FakeSpeechToText } from "
 import { GroqSpeechToText } from "./groq.js";
 import { JevClassifier } from "./jev.js";
 import { AnthropicWritingModel } from "./haiku.js";
+import { RealNotionProvider } from "./notion.js";
 
 export function createProviders(config: Config): Providers {
   const speechToText = config.groq.apiKey
@@ -18,10 +19,15 @@ export function createProviders(config: Config): Providers {
     ? new AnthropicWritingModel(config.haiku.apiKey, config.haiku.model)
     : new FakeWritingModel();
 
+  const notion =
+    config.notion.clientId && config.notion.clientSecret
+      ? new RealNotionProvider(config.notion.clientId, config.notion.clientSecret)
+      : new FakeNotion();
+
   return {
     speechToText,
     classifier,
     writingModel,
-    notion: new FakeNotion(),
+    notion,
   };
 }

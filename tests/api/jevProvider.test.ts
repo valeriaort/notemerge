@@ -405,6 +405,8 @@ describe("createProviders (classifier slot)", () => {
     const config = {
       groq: { apiKey: "" },
       jev: { apiKey: "real-jev-key", model: "jev-1.14.0" },
+      haiku: { apiKey: "" },
+      notion: { clientId: "", clientSecret: "" },
       transcriptionModel: "whisper-large-v3",
     } as Parameters<typeof createProviders>[0];
 
@@ -418,6 +420,8 @@ describe("createProviders (classifier slot)", () => {
     const config = {
       groq: { apiKey: "" },
       jev: { apiKey: "", model: "jev-1.14.0" },
+      haiku: { apiKey: "" },
+      notion: { clientId: "", clientSecret: "" },
       transcriptionModel: "whisper-large-v3",
     } as Parameters<typeof createProviders>[0];
 
