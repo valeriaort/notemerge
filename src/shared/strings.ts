@@ -50,6 +50,15 @@ export const strings = {
     windowsNotAdjacent: "Only adjacent windows can be merged.",
     cannotDeleteOnlyWindow: "Cannot delete the only window.",
   },
+  lectureMode: {
+    invalid: "mode must be \"live\" or \"untimed\".",
+    untimedNoEditor: "This lecture uses uploaded notes; the editor is not available.",
+    untimedNoMarkers: "Slide markers are only available for live notes.",
+    untimedNoStartTime: "Untimed lectures have no recording start time.",
+    notesFileRequired: "Upload the notes file (PDF, Markdown or Word) to continue.",
+    notesFileLiveOnly: "A notes file can only be uploaded for a lecture created with uploaded notes.",
+    alreadySealed: "The notes are sealed and cannot be replaced.",
+  },
   audio: {
     notesAloneError: "At least a presentation or an audio file is required — notes alone cannot be merged.",
     audio2WithoutAudio1Error: "A second audio file requires a first audio file.",

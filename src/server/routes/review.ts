@@ -23,6 +23,10 @@ export function reviewLockRoutes(db: Database.Database): Router {
       return;
     }
 
+    if (lecture.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoStartTime });
+      return;
+    }
     if (hasReviewDecision(db, lecture.id)) {
       res.status(409).json({ error: strings.review.lockedAfterReview });
       return;

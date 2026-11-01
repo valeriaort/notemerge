@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import type Database from "better-sqlite3";
+import { strings } from "../../shared/strings.js";
 import { createMarker, deleteMarker, getLecture, listMarkers } from "../db.js";
 
 export function markerRoutes(db: Database.Database): Router {
@@ -22,6 +23,10 @@ export function markerRoutes(db: Database.Database): Router {
       res.status(404).json({ error: "Lecture not found" });
       return;
     }
+    if (lecture.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoMarkers });
+      return;
+    }
     const { timestamp, blockId } = req.body as { timestamp?: unknown; blockId?: unknown };
     if (typeof timestamp !== "number" || typeof blockId !== "string") {
       res.status(400).json({ error: "timestamp (number) and blockId (string) required" });
@@ -32,6 +37,11 @@ export function markerRoutes(db: Database.Database): Router {
   });
 
   router.delete("/:lectureId/markers/:markerId", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["lectureId"]!);
+    if (lecture?.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoMarkers });
+      return;
+    }
     const deleted = deleteMarker(db, req.params["markerId"]!, req.params["lectureId"]!);
     if (!deleted) {
       res.status(404).json({ error: "Marker not found" });

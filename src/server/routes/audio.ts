@@ -14,15 +14,19 @@ import {
   createAudioFile,
   createAudioChunk,
   listAudioFiles,
+  updateLectureNotes,
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
 import { extractSlidesFromPdf } from "../pdfExtraction.js";
 import { chunkAudioFile } from "../chunking.js";
+import { convertNotesFile } from "../notesConversion.js";
 import { config } from "../config.js";
 import { writeFileSync, mkdirSync } from "fs";
 
 // ~2 hours maximum total audio duration
 const MAX_TOTAL_DURATION_MS = 2.5 * 60 * 60 * 1000;
+
+const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
@@ -52,6 +56,10 @@ export function audioSourcesRoutes(
       res.status(404).json({ error: strings.errors.lectureNotFound });
       return;
     }
+    if (lecture.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoStartTime });
+      return;
+    }
     const markers = listMarkers(db, lecture.id);
     const suggestedStartMs = markers.length > 0 ? markers[0]!.timestamp : null;
     res.json({ suggestedStartMs });
@@ -63,6 +71,11 @@ export function audioSourcesRoutes(
     const lecture = getLecture(db, req.params["id"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+
+    if (lecture.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoStartTime });
       return;
     }
 
@@ -93,6 +106,7 @@ export function audioSourcesRoutes(
     "/:id/sources",
     upload.fields([
       { name: "presentation", maxCount: 1 },
+      { name: "notes", maxCount: 1 },
       { name: "audio1", maxCount: 1 },
       { name: "audio2", maxCount: 1 },
     ]),
@@ -107,6 +121,22 @@ export function audioSourcesRoutes(
       const presentationFile = files?.["presentation"]?.[0];
       const audio1File = files?.["audio1"]?.[0];
       const audio2File = files?.["audio2"]?.[0];
+      const notesFile = files?.["notes"]?.[0];
+      const untimed = lecture.mode === "untimed";
+
+      if (untimed) {
+        if (SEALED_STAGES.has(lecture.stage)) {
+          res.status(409).json({ error: strings.lectureMode.alreadySealed });
+          return;
+        }
+        if (!notesFile) {
+          res.status(400).json({ error: strings.lectureMode.notesFileRequired });
+          return;
+        }
+      } else if (notesFile) {
+        res.status(400).json({ error: strings.lectureMode.notesFileLiveOnly });
+        return;
+      }
 
       // Valid combos: need at least a presentation or an audio file
       if (!presentationFile && !audio1File) {
@@ -128,7 +158,7 @@ export function audioSourcesRoutes(
       };
 
       // audio2 requires its own start time
-      if (audio2File && !body.audio2StartTime) {
+      if (!untimed && audio2File && !body.audio2StartTime) {
         res.status(400).json({ error: strings.audio.audio2StartTimeRequired });
         return;
       }
@@ -147,6 +177,17 @@ export function audioSourcesRoutes(
       } else {
         res.status(400).json({ error: strings.sources.subjectRequiredError });
         return;
+      }
+
+      // Untimed notes: convert the uploaded file into note blocks (stored only once everything validates)
+      let convertedNotes: string | null = null;
+      if (untimed && notesFile) {
+        const converted = await convertNotesFile(notesFile.originalname, notesFile.buffer);
+        if (!converted.ok) {
+          res.status(400).json({ error: converted.error });
+          return;
+        }
+        convertedNotes = JSON.stringify(converted.notes);
       }
 
       // Save lecture data dir
@@ -191,9 +232,12 @@ export function audioSourcesRoutes(
       // Phase 1: chunk all audio files, validate before persisting
       const processed: ProcessedAudio[] = [];
       for (const { file, index, startTimeStr } of audioInputs) {
-        // Determine recording start time
+        // Determine recording start time. Untimed lectures have none: times are audio-relative,
+        // file 1 starts at 0 and a second file is placed after the first (set below).
         let recordingStartMs: number;
-        if (startTimeStr) {
+        if (untimed) {
+          recordingStartMs = 0;
+        } else if (startTimeStr) {
           recordingStartMs = parseInt(startTimeStr, 10);
           if (isNaN(recordingStartMs)) {
             res.status(400).json({ error: `Invalid start time for audio file ${index}` });
@@ -229,6 +273,10 @@ export function audioSourcesRoutes(
         });
       }
 
+      if (untimed && processed.length === 2) {
+        processed[1]!.recordingStartMs = processed[0]!.durationMs;
+      }
+
       // Validate total duration before persisting
       const totalDurationMs = processed.reduce((sum, p) => sum + p.durationMs, 0);
       if (totalDurationMs > MAX_TOTAL_DURATION_MS) {
@@ -260,6 +308,8 @@ export function audioSourcesRoutes(
           );
         }
       }
+
+      if (convertedNotes !== null) updateLectureNotes(db, lecture.id, convertedNotes);
 
       // Seal the lecture
       const sealed = sealLecture(db, lecture.id, subject.id, presentationPath);

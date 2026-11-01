@@ -119,6 +119,10 @@ export function transcriptionRoutes(
       res.status(404).json({ error: strings.errors.lectureNotFound });
       return;
     }
+    if (lecture.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoStartTime });
+      return;
+    }
     if (lecture.stage === "review" || lecture.stage === "exported") {
       res.status(409).json({ error: strings.transcription.lockedAfterReview });
       return;
