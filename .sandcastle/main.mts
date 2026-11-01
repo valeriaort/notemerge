@@ -38,8 +38,8 @@ const CONCURRENCY = Number(flag("concurrency") ?? 4);
 const MAX_WAVES = Number(flag("max-waves") ?? 20);
 const ONLY = flag("only")?.split(",").map(Number);
 
-const IMPLEMENT_MODEL = "claude-sonnet-4-6";
-const MERGE_MODEL = "claude-opus-4-8"; // merges of parallel branches need care
+const IMPLEMENT_MODEL = "claude-sonnet-5-5";
+const MERGE_MODEL = "claude-opus-5-5"; // merges of parallel branches need care
 
 // Caches are bind-mounted so parallel sandboxes don't re-download everything.
 mkdirSync(".sandcastle/cache/npm", { recursive: true });
