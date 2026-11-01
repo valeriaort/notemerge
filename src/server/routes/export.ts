@@ -73,7 +73,7 @@ function computeNotionBlocks(
 
   const finalFlat: WorkBlock[] = [];
   for (const block of allBlocks) {
-    if (block.reviewState === "reverted") continue;
+    if (block.reviewState === "reverted" || block.reviewState === "deleted") continue;
     if (block.origin === "conflict" && block.reviewState === "unresolved") continue;
     if (block.origin === "student" && block.noteId !== null && markerBlockIds.has(block.noteId)) continue;
 

@@ -131,9 +131,9 @@ export function mergeRoutes(
       return;
     }
 
-    const VALID_STATES: MergedBlockReviewState[] = ["kept", "reverted", "unresolved", "edited"];
+    const VALID_STATES: MergedBlockReviewState[] = ["kept", "reverted", "unresolved", "edited", "deleted"];
     if (reviewState !== undefined && (typeof reviewState !== "string" || !VALID_STATES.includes(reviewState as MergedBlockReviewState))) {
-      res.status(400).json({ error: "Invalid reviewState. Must be one of: kept, reverted, unresolved, edited." });
+      res.status(400).json({ error: "Invalid reviewState. Must be one of: kept, reverted, unresolved, edited, deleted." });
       return;
     }
 
@@ -149,6 +149,15 @@ export function mergeRoutes(
     }
 
     if (typeof reviewState === "string") {
+      const weakStates = ["kept", "deleted"];
+      if (existing.weakMatch && !weakStates.includes(reviewState)) {
+        res.status(400).json({ error: "A weak match can only be kept or deleted." });
+        return;
+      }
+      if (!existing.weakMatch && reviewState === "deleted") {
+        res.status(400).json({ error: "Only a weak match can be deleted." });
+        return;
+      }
       updateMergedBlockReviewState(db, existing.id, reviewState);
 
       // For conflict blocks: side-effect text changes on E and reopen

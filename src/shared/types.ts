@@ -267,7 +267,7 @@ export interface Operation {
 }
 
 export type MergedBlockOrigin = "student" | "addition" | "partial_fix" | "conflict" | "fallback";
-export type MergedBlockReviewState = "kept" | "reverted" | "unresolved" | "edited";
+export type MergedBlockReviewState = "kept" | "reverted" | "unresolved" | "edited" | "deleted";
 
 export interface Citation {
   sourceId: string;
@@ -290,4 +290,7 @@ export interface MergedBlock {
   reviewState: MergedBlockReviewState | null;
   played: boolean;
   lowConfidence: boolean;
+  // A note block of untimed notes that matched nothing confidently and has no conflict:
+  // review state is kept or deleted, default kept
+  weakMatch: boolean;
 }

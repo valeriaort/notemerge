@@ -25,6 +25,7 @@ import {
   getLecture,
   getMergeRunByLectureId,
   getAlignment,
+  getWeakMatches,
   getWindowResultsByMergeRunId,
   getWindowResultByWindowId,
   listAbbreviationPairs,
@@ -577,6 +578,7 @@ async function runHaikuAndBuildNote(
   }
 
   // Save merged blocks
+  const weakIds = new Set(getWeakMatches(db, mergeRun.id).map((w) => w.blockId));
   for (let pos = 0; pos < mergedList.length; pos++) {
     const item = mergedList[pos]!;
     const block: MergedBlock = {
@@ -594,7 +596,13 @@ async function runHaikuAndBuildNote(
       reviewState: item.reviewState as MergedBlock["reviewState"],
       played: false,
       lowConfidence: false,
+      weakMatch: false,
     };
+    // A weak match whose conflict check found no conflict stays a student block, gray in review
+    if (item.origin === "student" && item.noteId !== null && weakIds.has(item.noteId)) {
+      block.weakMatch = true;
+      block.reviewState = "kept";
+    }
     createMergedBlock(db, block);
   }
 }
@@ -816,6 +824,114 @@ function buildProcessWindow(
   };
 }
 
+// A weak match is conflict-checked on its own, against the pool of its three most similar
+// windows (ignoring order). Its window result is keyed "weak:<blockId>" so it persists, pauses
+// and retries like a window; coverage does not apply, so it starts done.
+function buildProcessWeakMatch(
+  db: Database.Database,
+  mergeRun: MergeRun,
+  windows: AlignedWindow[],
+  allBlocks: unknown[],
+  slideMap: Map<string, ExtractedSlide>,
+  sentenceMap: Map<string, Sentence>,
+  maxRetryAttempts: number,
+  retryBaseMs: number,
+  providers: Providers,
+) {
+  return async function processWeakMatch(
+    weak: WeakMatch,
+    existingWr?: WindowResult,
+  ): Promise<boolean> {
+    let windowResult = existingWr;
+    if (!windowResult) {
+      windowResult = createWindowResult(db, uuidv4(), mergeRun.id, weakMatchKey(weak.blockId));
+      updateWindowResultCoverage(db, windowResult.id, "done");
+    }
+
+    const block = allBlocks.find((b) => blockId(b) === weak.blockId);
+    const text = block ? expandAbbreviations(blockText(block), listAbbreviationPairs(db)) : "";
+    const similar = new Set(weak.similarWindowIds);
+    const pool: Array<{ id: string; text: string; label: "slide" | "transcript" }> = [];
+    for (const w of windows) {
+      if (!similar.has(w.id)) continue;
+      for (const slideId of w.mappedSlides) {
+        for (const b of slideMap.get(slideId)?.bullets ?? []) {
+          if (!pool.some((p) => p.id === b.id)) pool.push({ id: b.id, text: b.text, label: "slide" });
+        }
+      }
+      for (const sid of w.sentenceIds) {
+        const sentence = sentenceMap.get(sid);
+        if (sentence && !pool.some((p) => p.id === sid)) {
+          pool.push({ id: sid, text: sentenceText(sentence), label: "transcript" });
+        }
+      }
+    }
+
+    if (windowResult.conflictStatus === "done") return true;
+    if (!text || pool.length === 0) {
+      updateWindowResultConflict(db, windowResult.id, "done");
+      return true;
+    }
+
+    const key = `conflict:${weak.blockId}`;
+    const poolState = "Pool:\n" + pool.map((p) => `${p.id} [${p.label}]: ${p.text}`).join("\n");
+    try {
+      const answers = await retryClassifierCall(
+        () => providers.classifier.checkConflicts(poolState, [{ key, noteBlockId: weak.blockId, text }]),
+        maxRetryAttempts,
+        retryBaseMs,
+      );
+      const answer = answers[key] ?? { label: "supported" as const, probability: 0.99 };
+      saveVerdicts(db, windowResult.id, [
+        {
+          id: uuidv4(),
+          questionKey: key,
+          chosenLabel: answer.label,
+          probability: answer.probability,
+          effectiveLabel: answer.label,
+        },
+      ]);
+      updateWindowResultConflict(db, windowResult.id, "done");
+      if (answer.label === "conflicts") {
+        const poolIds = pool.map((p) => p.id);
+        const evidence = (answer.evidenceIds ?? []).filter((id) => poolIds.includes(id));
+        createEditListEntry(db, {
+          id: uuidv4(),
+          mergeRunId: mergeRun.id,
+          type: "conflict",
+          windowId: weak.windowId,
+          sourceIds: evidence.length > 0 ? [...new Set(evidence)] : poolIds,
+          noteId: weak.blockId,
+          retrievedNoteIds: [],
+          sourceText: block ? blockText(block) : text,
+        });
+      }
+      return true;
+    } catch (err) {
+      updateWindowResultConflict(
+        db,
+        windowResult.id,
+        "failed",
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+  };
+}
+
+function weakMatchKey(blockId: string): string {
+  return `weak:${blockId}`;
+}
+
+async function runWithConcurrency(tasks: Array<() => Promise<unknown>>, concurrency: number): Promise<void> {
+  const queue = [...tasks];
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length > 0) await queue.shift()!();
+    }),
+  );
+}
+
 export async function mergeLecture(
   db: Database.Database,
   lectureId: string,
@@ -903,6 +1019,11 @@ export async function mergeLecture(
 
   await drainQueue();
 
+  const processWeakMatch = buildProcessWeakMatch(
+    db, mergeRun, windows, allBlocks, slideMap, sentenceMap, maxRetryAttempts, retryBaseMs, providers,
+  );
+  await runWithConcurrency(weakMatches.map((w) => () => processWeakMatch(w)), concurrency);
+
   // Check for failures
   const allWindowResults = getWindowResultsByMergeRunId(db, mergeRun.id);
   const failedWindowIds = allWindowResults
@@ -989,6 +1110,18 @@ export async function retryMergeLecture(
   }
 
   await drainQueue();
+
+  const processWeakMatch = buildProcessWeakMatch(
+    db, mergeRun, windows, allBlocks, slideMap, sentenceMap, maxRetryAttempts, retryBaseMs, providers,
+  );
+  const weakToRetry = getWeakMatches(db, mergeRun.id).filter((w) => {
+    const wr = windowResultMap.get(weakMatchKey(w.blockId));
+    return !wr || wr.conflictStatus !== "done";
+  });
+  await runWithConcurrency(
+    weakToRetry.map((w) => () => processWeakMatch(w, windowResultMap.get(weakMatchKey(w.blockId)))),
+    concurrency,
+  );
 
   // Check for remaining failures
   const allWindowResults = getWindowResultsByMergeRunId(db, mergeRun.id);

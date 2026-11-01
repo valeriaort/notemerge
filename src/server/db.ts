@@ -282,6 +282,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN weak_matches TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE merged_blocks ADD COLUMN weak_match INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
   return db;
 }
@@ -1347,6 +1348,7 @@ type MergedBlockRow = {
   model_placed: number;
   review_state: string | null;
   played: number;
+  weak_match: number;
 };
 
 function rowToMergedBlock(row: MergedBlockRow): MergedBlock {
@@ -1365,6 +1367,7 @@ function rowToMergedBlock(row: MergedBlockRow): MergedBlock {
     reviewState: row.review_state as MergedBlockReviewState | null,
     played: (row.played ?? 0) === 1,
     lowConfidence: false,
+    weakMatch: (row.weak_match ?? 0) === 1,
   };
 }
 
@@ -1373,8 +1376,8 @@ export function createMergedBlock(
   block: MergedBlock,
 ): MergedBlock {
   db.prepare(
-    `INSERT INTO merged_blocks (id, merge_run_id, position, window_id, origin, note_id, text, original_text, proposed_rewrite, citations, model_placed, review_state, played)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO merged_blocks (id, merge_run_id, position, window_id, origin, note_id, text, original_text, proposed_rewrite, citations, model_placed, review_state, played, weak_match)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     block.id,
     block.mergeRunId,
@@ -1389,6 +1392,7 @@ export function createMergedBlock(
     block.modelPlaced ? 1 : 0,
     block.reviewState ?? null,
     block.played ? 1 : 0,
+    block.weakMatch ? 1 : 0,
   );
   return rowToMergedBlock(
     db.prepare("SELECT * FROM merged_blocks WHERE id = ?").get(block.id) as MergedBlockRow,
@@ -1494,6 +1498,7 @@ export function hasReviewDecision(
     `SELECT 1 FROM merged_blocks mb
      JOIN merge_runs mr ON mb.merge_run_id = mr.id
      WHERE mr.lecture_id = ? AND mb.review_state IS NOT NULL
+       AND NOT (mb.weak_match = 1 AND mb.review_state = 'kept')
      LIMIT 1`,
   ).get(lectureId);
   return row !== undefined;
@@ -1546,7 +1551,7 @@ export function computeFinalNoteBlocks(
 
   const result: FinalNoteBlock[] = [];
   for (const block of blocks) {
-    if (block.reviewState === "reverted") continue;
+    if (block.reviewState === "reverted" || block.reviewState === "deleted") continue;
     if (block.origin === "conflict" && block.reviewState === "unresolved") continue;
     if (block.origin === "student" && block.noteId !== null && markerBlockIds.has(block.noteId)) continue;
     result.push({ id: block.id, text: block.text });
