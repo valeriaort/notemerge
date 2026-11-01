@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import type { Providers } from "../../providers/interfaces.js";
 import type { Config } from "../config.js";
 import {
+  getAlignment,
   getLecture,
   getMergeRunByLectureId,
   listMergedBlocks,
@@ -74,6 +75,23 @@ export function mergeRoutes(
     }
 
     res.json({ mergeRun });
+  });
+
+  router.get("/:lectureId/alignment", (req: Request, res: Response) => {
+    const lecture = getLecture(db, req.params["lectureId"]!);
+    if (!lecture) {
+      res.status(404).json({ error: strings.errors.lectureNotFound });
+      return;
+    }
+
+    const mergeRun = getMergeRunByLectureId(db, lecture.id);
+    const windows = mergeRun ? getAlignment(db, mergeRun.id) : null;
+    if (!windows) {
+      res.status(404).json({ error: "No alignment found for this lecture." });
+      return;
+    }
+
+    res.json({ windows });
   });
 
   router.get("/:lectureId/merged-note", (req: Request, res: Response) => {

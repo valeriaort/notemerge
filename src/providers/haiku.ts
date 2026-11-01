@@ -64,13 +64,17 @@ type EditEntry = {
 
 function buildUserMessage(input: {
   sealedNotes: Array<{ id: string; text: string }>;
-  windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
+  windowRanges: Array<{ windowId: string; startMs?: number; endMs?: number }>;
   editList: EditEntry[];
 }): string {
   const notesSection = input.sealedNotes.map((n) => `[${n.id}] ${n.text}`).join("\n");
 
   const windowsSection = input.windowRanges
-    .map((w) => `[${w.windowId}] ${w.startMs}ms–${w.endMs}ms`)
+    .map((w) =>
+      w.startMs !== undefined && w.endMs !== undefined
+        ? `[${w.windowId}] ${w.startMs}ms–${w.endMs}ms`
+        : `[${w.windowId}]`,
+    )
     .join("\n");
 
   const noteById = new Map(input.sealedNotes.map((n) => [n.id, n.text]));
@@ -143,7 +147,7 @@ export class AnthropicWritingModel implements WritingModelProvider {
 
   async generateOperations(input: {
     sealedNotes: Array<{ id: string; text: string }>;
-    windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
+    windowRanges: Array<{ windowId: string; startMs?: number; endMs?: number }>;
     editList: EditEntry[];
   }): Promise<WritingOperation[]> {
     const body = {

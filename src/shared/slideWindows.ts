@@ -1,4 +1,4 @@
-import type { SlideMarker, NotesDocument, SlideWindow } from "./types.js";
+import type { SlideMarker, NotesDocument, Window } from "./types.js";
 
 const FOUR_MINUTES_MS = 4 * 60 * 1000;
 
@@ -25,7 +25,7 @@ export function computeWindows(
   notesData: NotesDocument,
   slideCount?: number,
   audioBounds?: { startMs: number; endMs: number },
-): SlideWindow[] {
+): Window[] {
   const bounds = lectureBounds(notesData, audioBounds);
   if (bounds === null) return [];
 
@@ -55,7 +55,7 @@ export function computeWindows(
   }
 
   // Build windows from consecutive boundary pairs
-  const windows: SlideWindow[] = [];
+  const windows: Window[] = [];
   for (let i = 0; i < boundaries.length - 1; i++) {
     const start = boundaries[i]!;
     const end = boundaries[i + 1]!;
@@ -75,7 +75,7 @@ export function computeWindows(
   for (const [blockId, meta] of Object.entries(notesData.meta)) {
     if (meta.firstEditTime === undefined) continue;
     const t = meta.firstEditTime;
-    let target: SlideWindow | undefined;
+    let target: Window | undefined;
     for (const w of windows) {
       if (w.startMs <= t) target = w;
       else break;

@@ -3,7 +3,7 @@ import path from "path";
 import { readFileSync } from "fs";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
-import type { Lecture, SlideWindow } from "../../src/shared/types.js";
+import type { Lecture, Window } from "../../src/shared/types.js";
 import FormData from "form-data";
 
 const FIXTURES = path.resolve("tests/fixtures");
@@ -13,7 +13,7 @@ const MINIMAL_PDF = Buffer.from(
   "%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 3 3]>>endobj\nxref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF",
 );
 
-type WindowsResponse = { windows: SlideWindow[]; notice?: string };
+type WindowsResponse = { windows: Window[]; notice?: string };
 
 let server: TestServer;
 

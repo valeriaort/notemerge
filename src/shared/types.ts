@@ -137,12 +137,26 @@ export interface UnknownToken {
   frequency: number;
 }
 
-export type SlideWindow = {
+export type Window = {
   id: string;
   startMs: number;
   endMs: number;
   mappedSlides: string[];
   blockIds: string[];
+};
+
+// One window of the persisted alignment: which slides, transcript sentences and note blocks
+// are judged in it, and which neighbouring ones are only context. The merge reads these IDs
+// and never filters by time. startMs/endMs are present when the window has a time range.
+export type AlignedWindow = {
+  id: string;
+  mappedSlides: string[];
+  sentenceIds: string[];
+  blockIds: string[];
+  contextSentenceIds: string[];
+  contextBlockIds: string[];
+  startMs?: number;
+  endMs?: number;
 };
 
 // Stored override entry (no blockIds — always recomputed from notes)

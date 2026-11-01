@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
-import type { Lecture, SlideWindow } from "../../src/shared/types.js";
+import type { Lecture, Window } from "../../src/shared/types.js";
 
-type WindowsResponse = { windows: SlideWindow[]; notice?: string };
-type FixerResponse = { windows: SlideWindow[] };
+type WindowsResponse = { windows: Window[]; notice?: string };
+type FixerResponse = { windows: Window[] };
 
 let server: TestServer;
 
@@ -89,7 +89,7 @@ async function deleteWindow(
 }
 
 // Creates a lecture with 3 windows: W001[1000-4000], W002[4000-7000], W003[7000-10000]
-async function lectureWithThreeWindows(): Promise<{ lectureId: string; windows: SlideWindow[] }> {
+async function lectureWithThreeWindows(): Promise<{ lectureId: string; windows: Window[] }> {
   const lecture = await createLecture();
   await putNotes(lecture.id, [
     { id: "B1", firstEditTime: 1000, lastEditTime: 10000 },

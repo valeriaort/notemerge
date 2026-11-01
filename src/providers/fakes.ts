@@ -109,7 +109,7 @@ export class FakeClassifier implements ClassifierProvider {
 export class FakeWritingModel implements WritingModelProvider {
   async generateOperations(_input: {
     sealedNotes: Array<{ id: string; text: string }>;
-    windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
+    windowRanges: Array<{ windowId: string; startMs?: number; endMs?: number }>;
     editList: unknown[];
   }): Promise<WritingOperation[]> {
     return [];

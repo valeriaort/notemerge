@@ -23,6 +23,7 @@ import type {
   SentenceStatus,
   SlideMarker,
   Subject,
+  AlignedWindow,
   TranscriptRun,
   TranscriptRunState,
   User,
@@ -274,6 +275,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE sentences ADD COLUMN audio_end_offset_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE sentences ADD COLUMN clock_end_time_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE merge_runs ADD COLUMN alignment TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
   return db;
@@ -1062,6 +1064,26 @@ export function createMergeRun(
   return rowToMergeRun(
     db.prepare("SELECT * FROM merge_runs WHERE id = ?").get(id) as MergeRunRow,
   );
+}
+
+export function saveAlignment(
+  db: Database.Database,
+  mergeRunId: string,
+  alignment: AlignedWindow[],
+): void {
+  db.prepare("UPDATE merge_runs SET alignment = ? WHERE id = ?")
+    .run(JSON.stringify(alignment), mergeRunId);
+}
+
+export function getAlignment(
+  db: Database.Database,
+  mergeRunId: string,
+): AlignedWindow[] | null {
+  const row = db
+    .prepare("SELECT alignment FROM merge_runs WHERE id = ?")
+    .get(mergeRunId) as { alignment: string | null } | undefined;
+  if (!row || row.alignment === null) return null;
+  return JSON.parse(row.alignment) as AlignedWindow[];
 }
 
 export function getMergeRunByLectureId(

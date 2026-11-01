@@ -11,7 +11,7 @@ import type {
   MergedBlock,
   NotesDocument,
   Sentence,
-  SlideWindow,
+  AlignedWindow,
   WindowResult,
   WritingOperation,
 } from "../shared/types.js";
@@ -23,11 +23,13 @@ import {
   createWindowResult,
   getLecture,
   getMergeRunByLectureId,
+  getAlignment,
   getWindowResultsByMergeRunId,
   getWindowResultByWindowId,
   listAbbreviationPairs,
   listEditListEntries,
   listSentencesByLecture,
+  saveAlignment,
   saveVerdicts,
   updateLectureStage,
   updateMergeRunState,
@@ -35,6 +37,7 @@ import {
   updateWindowResultConflict,
 } from "./db.js";
 import { resolveWindows } from "./lectureWindows.js";
+import { timeAlign } from "./timeAlignment.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import type { ExtractedSlide, SlideBullet } from "./pdfExtraction.js";
 
@@ -111,24 +114,20 @@ function poolItemsFor(
   return items;
 }
 
-// Find which window a block belongs to (firstEditTime in [startMs, endMs))
-function findWindowForBlock(
-  firstEditTime: number,
-  windows: SlideWindow[],
-): SlideWindow | undefined {
-  let result: SlideWindow | undefined;
+// The window each note block was judged in, from the persisted alignment
+function windowIdByBlock(windows: AlignedWindow[]): Map<string, string> {
+  const map = new Map<string, string>();
   for (const w of windows) {
-    if (w.startMs <= firstEditTime) result = w;
-    else break;
+    for (const blockId of w.blockIds) map.set(blockId, w.id);
   }
-  return result;
+  return map;
 }
 
 // Find insertion position after last student block in a window
 function insertionPositionForWindow(
   windowId: string,
   mergedList: Array<{ origin: string; windowId: string | null; originalPos: number }>,
-  windows: SlideWindow[],
+  windows: AlignedWindow[],
 ): number {
   const winIdx = windows.findIndex((w) => w.id === windowId);
 
@@ -181,7 +180,7 @@ async function runHaikuStep(
   db: Database.Database,
   mergeRun: MergeRun,
   lectureId: string,
-  windows: SlideWindow[],
+  windows: AlignedWindow[],
   slideMap: Map<string, ExtractedSlide>,
   sentenceMap: Map<string, Sentence>,
   notesData: NotesDocument,
@@ -208,7 +207,7 @@ async function runHaikuAndBuildNote(
   db: Database.Database,
   mergeRun: MergeRun,
   lectureId: string,
-  windows: SlideWindow[],
+  windows: AlignedWindow[],
   slideMap: Map<string, ExtractedSlide>,
   sentenceMap: Map<string, Sentence>,
   notesData: NotesDocument,
@@ -216,6 +215,7 @@ async function runHaikuAndBuildNote(
   config: Config,
 ): Promise<void> {
   const allBlocks = notesData.blocks as unknown[];
+  const windowOfBlock = windowIdByBlock(windows);
   const editList = listEditListEntries(db, mergeRun.id);
 
   const sealedNotes = allBlocks.map((b) => ({
@@ -225,8 +225,7 @@ async function runHaikuAndBuildNote(
 
   const windowRanges = windows.map((w) => ({
     windowId: w.id,
-    startMs: w.startMs,
-    endMs: w.endMs,
+    ...(w.startMs !== undefined && w.endMs !== undefined ? { startMs: w.startMs, endMs: w.endMs } : {}),
   }));
 
   const haikuEditList = editList.map((e) => ({
@@ -271,16 +270,12 @@ async function runHaikuAndBuildNote(
         return sealedNotes.filter((n) => inHalf(n.id) || referenced.has(n.id));
       };
       const inFirstHalf = (noteId: string): boolean => {
-        const meta = notesData.meta[noteId];
-        if (!meta?.firstEditTime) return true;
-        const win = findWindowForBlock(meta.firstEditTime, windows);
-        return !win || firstHalfIds.has(win.id);
+        const winId = windowOfBlock.get(noteId);
+        return winId === undefined || firstHalfIds.has(winId);
       };
       const inSecondHalf = (noteId: string): boolean => {
-        const meta = notesData.meta[noteId];
-        if (!meta?.firstEditTime) return false;
-        const win = findWindowForBlock(meta.firstEditTime, windows);
-        return win !== undefined && !firstHalfIds.has(win.id);
+        const winId = windowOfBlock.get(noteId);
+        return winId !== undefined && !firstHalfIds.has(winId);
       };
       const sealedFirst = withReferencedNotes(editListFirst, inFirstHalf);
       const sealedSecond = withReferencedNotes(editListSecond, inSecondHalf);
@@ -397,15 +392,11 @@ async function runHaikuAndBuildNote(
   for (let i = 0; i < allBlocks.length; i++) {
     const block = allBlocks[i]!;
     const bid = blockId(block);
-    const meta = notesData.meta[bid];
-    const windowForBlock = meta?.firstEditTime
-      ? findWindowForBlock(meta.firstEditTime, windows)
-      : undefined;
 
     mergedList.push({
       id: uuidv4(),
       origin: "student",
-      windowId: windowForBlock?.id ?? null,
+      windowId: windowOfBlock.get(bid) ?? null,
       noteId: bid,
       text: blockText(block),
       originalText: null,
@@ -609,17 +600,15 @@ function buildProcessWindow(
   db: Database.Database,
   mergeRun: MergeRun,
   allBlocks: unknown[],
-  notesData: NotesDocument,
   slideMap: Map<string, ExtractedSlide>,
-  activeSentences: Sentence[],
-  contextMarginMs: number,
+  sentenceMap: Map<string, Sentence>,
   noiseThreshold: number,
   maxRetryAttempts: number,
   retryBaseMs: number,
   providers: Providers,
 ) {
   return async function processWindow(
-    window: SlideWindow,
+    window: AlignedWindow,
     existingWr?: WindowResult,
   ): Promise<boolean> {
     const bullets: SlideBullet[] = [];
@@ -630,17 +619,13 @@ function buildProcessWindow(
       }
     }
 
-    const marginStart = window.startMs - contextMarginMs;
-    const marginEnd = window.endMs + contextMarginMs;
-
-    const inWindowSentences = activeSentences.filter(
-      (s) => s.clockStartTimeMs >= window.startMs && s.clockStartTimeMs < window.endMs,
-    );
-    const marginSentences = activeSentences.filter(
-      (s) =>
-        (s.clockStartTimeMs >= marginStart && s.clockStartTimeMs < window.startMs) ||
-        (s.clockStartTimeMs >= window.endMs && s.clockStartTimeMs <= marginEnd),
-    );
+    const sentencesOf = (ids: string[]): Sentence[] =>
+      ids.flatMap((id) => {
+        const sentence = sentenceMap.get(id);
+        return sentence ? [sentence] : [];
+      });
+    const inWindowSentences = sentencesOf(window.sentenceIds);
+    const marginSentences = sentencesOf(window.contextSentenceIds);
 
     if (bullets.length === 0 && inWindowSentences.length === 0) return true;
 
@@ -649,21 +634,17 @@ function buildProcessWindow(
     const abbrevPairs = listAbbreviationPairs(db);
     const retrievedBlocks: Array<{ id: string; text: string }> = [];
     const inWindowBlocks: Array<{ id: string; text: string }> = [];
+    const judgedIds = new Set(window.blockIds);
+    const contextIds = new Set(window.contextBlockIds);
     for (const block of allBlocks) {
       const bid = blockId(block);
-      const meta = notesData.meta[bid];
-      if (!meta?.firstEditTime) continue;
+      if (!judgedIds.has(bid) && !contextIds.has(bid)) continue;
       const rawText = blockText(block);
       if (!rawText) continue;
       const expanded = expandAbbreviations(rawText, abbrevPairs);
 
-      if (meta.firstEditTime >= marginStart && meta.firstEditTime <= marginEnd) {
-        retrievedBlocks.push({ id: bid, text: expanded });
-      }
-
-      if (meta.firstEditTime >= window.startMs && meta.firstEditTime < window.endMs) {
-        inWindowBlocks.push({ id: bid, text: expanded });
-      }
+      if (contextIds.has(bid)) retrievedBlocks.push({ id: bid, text: expanded });
+      if (judgedIds.has(bid)) inWindowBlocks.push({ id: bid, text: expanded });
     }
 
     let coverageState = "Notes context:\n" + retrievedBlocks.map((b) => b.text).join("\n");
@@ -862,11 +843,16 @@ export async function mergeLecture(
   const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const windows = resolveWindows(db, lecture, slides.length);
-
   const mergeRun = createMergeRun(db, uuidv4(), lectureId);
 
   const contextMarginMs = config.contextMarginMs ?? 60000;
+  const windows = timeAlign(
+    resolveWindows(db, lecture, slides.length),
+    notesData,
+    activeSentences,
+    contextMarginMs,
+  );
+  saveAlignment(db, mergeRun.id, windows);
   const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
   const concurrency = config.mergeWindowConcurrency ?? 4;
   const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;
@@ -875,8 +861,8 @@ export async function mergeLecture(
   const allBlocks = notesData.blocks as unknown[];
 
   const processWindow = buildProcessWindow(
-    db, mergeRun, allBlocks, notesData, slideMap, activeSentences,
-    contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
+    db, mergeRun, allBlocks, slideMap, sentenceMap,
+    noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
   );
 
   const queue = [...windows];
@@ -936,9 +922,9 @@ export async function retryMergeLecture(
   const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const windows = resolveWindows(db, lecture, slides.length);
+  const windows = getAlignment(db, mergeRun.id);
+  if (!windows) throw new Error("NO_ALIGNMENT");
 
-  const contextMarginMs = config.contextMarginMs ?? 60000;
   const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
   const concurrency = config.mergeWindowConcurrency ?? 4;
   const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;
@@ -954,8 +940,8 @@ export async function retryMergeLecture(
   updateMergeRunState(db, mergeRun.id, "running", []);
 
   const processWindow = buildProcessWindow(
-    db, mergeRun, allBlocks, notesData, slideMap, activeSentences,
-    contextMarginMs, noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
+    db, mergeRun, allBlocks, slideMap, sentenceMap,
+    noiseThreshold, maxRetryAttempts, retryBaseMs, providers,
   );
 
   // Only retry windows that are not fully done

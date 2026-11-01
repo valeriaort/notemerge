@@ -67,7 +67,7 @@ export interface ClassifierProvider {
 export interface WritingModelProvider {
   generateOperations(input: {
     sealedNotes: Array<{ id: string; text: string }>;
-    windowRanges: Array<{ windowId: string; startMs: number; endMs: number }>;
+    windowRanges: Array<{ windowId: string; startMs?: number; endMs?: number }>;
     editList: Array<{
       id: string;
       type: string;

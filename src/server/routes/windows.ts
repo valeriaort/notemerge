@@ -13,7 +13,7 @@ import {
 import { computeWindows } from "../../shared/slideWindows.js";
 import { getAudioBounds, assignBlockIds, resolveWindows } from "../lectureWindows.js";
 import { strings } from "../../shared/strings.js";
-import type { NotesDocument, SlideWindow, WindowOverride } from "../../shared/types.js";
+import type { NotesDocument, Window, WindowOverride } from "../../shared/types.js";
 import type { ExtractedSlide } from "../pdfExtraction.js";
 
 // Stages that allow mapping edits; blocked at "merge" and beyond
@@ -26,7 +26,7 @@ function getSlideCount(dataDir: string): number | undefined {
   return slides.length;
 }
 
-function toOverrides(windows: SlideWindow[]): WindowOverride[] {
+function toOverrides(windows: Window[]): WindowOverride[] {
   return windows.map((w) => ({
     id: w.id,
     startMs: w.startMs,

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { listMarkers, listAudioFiles, getWindowOverrides } from "./db.js";
 import { computeWindows } from "../shared/slideWindows.js";
-import type { NotesDocument, SlideWindow } from "../shared/types.js";
+import type { NotesDocument, Window } from "../shared/types.js";
 
 // Audio start/end become part of the lecture bounds (spec: lecture start/end include audio)
 export function getAudioBounds(
@@ -24,7 +24,7 @@ export function resolveWindows(
   db: Database.Database,
   lecture: { id: string; notesData: string },
   slideCount?: number,
-): SlideWindow[] {
+): Window[] {
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
   const stored = getWindowOverrides(db, lecture.id);
   if (stored !== null) {
@@ -37,12 +37,12 @@ export function resolveWindows(
 export function assignBlockIds(
   overrides: { id: string; startMs: number; endMs: number; mappedSlides: string[] }[],
   notesData: NotesDocument,
-): SlideWindow[] {
-  const result: SlideWindow[] = overrides.map((o) => ({ ...o, blockIds: [] }));
+): Window[] {
+  const result: Window[] = overrides.map((o) => ({ ...o, blockIds: [] }));
   for (const [blockId, meta] of Object.entries(notesData.meta)) {
     if (meta.firstEditTime === undefined) continue;
     const t = meta.firstEditTime;
-    let target: SlideWindow | undefined;
+    let target: Window | undefined;
     for (const w of result) {
       if (w.startMs <= t) target = w;
       else break;
