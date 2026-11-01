@@ -103,6 +103,9 @@ export const strings = {
     lockedAfterReview: "Cannot change transcription settings after review decisions have been made.",
     playLabel: "Play",
     checkByEarBadge: "Check by ear",
+    weakMatchLabel: "Not matched to this year's class",
+    weakMatchKeep: "Keep",
+    weakMatchDelete: "Delete",
   },
   export: {
     unresolvedConflicts: "Export blocked: resolve all conflicts before exporting.",

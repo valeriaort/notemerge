@@ -77,6 +77,11 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #ffc107",
     color: "#856404",
   },
+  weakBlock: {
+    background: "#eee",
+    border: "1px solid #ccc",
+    color: "#666",
+  },
   citation: {
     fontSize: "0.78rem",
     color: "#555",
@@ -103,6 +108,15 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 function blockStyle(block: MergedBlock): React.CSSProperties {
+  if (block.weakMatch) {
+    return {
+      ...styles.block,
+      ...styles.weakBlock,
+      ...(block.reviewState === "deleted"
+        ? { textDecoration: "line-through", opacity: 0.6 }
+        : { fontStyle: "italic" }),
+    };
+  }
   if (block.origin === "conflict") return { ...styles.block, ...styles.conflictBlock };
   if (block.origin === "addition" || block.origin === "partial_fix") return { ...styles.block, ...styles.additionBlock };
   if (block.origin === "fallback") return { ...styles.block, ...styles.fallbackBlock };
@@ -223,6 +237,31 @@ function BlockView({
               Restore
             </button>
           )}
+        </div>
+      )}
+      {block.weakMatch && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...styles.label, color: "#666", fontStyle: "normal", textDecoration: "none" }}>
+            {strings.review.weakMatchLabel}
+          </div>
+          <div style={{ display: "flex", gap: "0.25rem", fontStyle: "normal" }}>
+            <button
+              data-testid="weak-keep-button"
+              aria-pressed={block.reviewState !== "deleted"}
+              style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer", fontWeight: block.reviewState !== "deleted" ? 700 : 400 }}
+              onClick={() => void patchReviewState("kept")}
+            >
+              {strings.review.weakMatchKeep}
+            </button>
+            <button
+              data-testid="weak-delete-button"
+              aria-pressed={block.reviewState === "deleted"}
+              style={{ fontSize: "0.75rem", padding: "0.1rem 0.5rem", cursor: "pointer", fontWeight: block.reviewState === "deleted" ? 700 : 400 }}
+              onClick={() => void patchReviewState("deleted")}
+            >
+              {strings.review.weakMatchDelete}
+            </button>
+          </div>
         </div>
       )}
       {isConflict && (
