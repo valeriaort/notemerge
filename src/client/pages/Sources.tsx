@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Lecture, Subject } from "../../shared/types.js";
+import type { Lecture, LectureMode, Subject } from "../../shared/types.js";
 import { strings } from "../../shared/strings.js";
 
 type ExtractedSlide = {
@@ -129,6 +129,8 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
   const [newSubjectName, setNewSubjectName] = useState("");
   const [presentationFile, setPresentationFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<LectureMode>("live");
+  const [notesFile, setNotesFile] = useState<File | null>(null);
   const [guiaFile, setGuiaFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -136,6 +138,15 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
   const [sealedSlides, setSealedSlides] = useState<ExtractedSlide[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const guiaInputRef = useRef<HTMLInputElement>(null);
+  const notesInputRef = useRef<HTMLInputElement>(null);
+  const untimed = mode === "untimed";
+
+  useEffect(() => {
+    fetch(`/api/lectures/${lectureId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((l: Lecture | null) => { if (l) setMode(l.mode); })
+      .catch(() => { /* stay in live mode */ });
+  }, [lectureId]);
 
   useEffect(() => {
     Promise.all([
@@ -175,13 +186,14 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
 
   const handleSubmit = useCallback(async () => {
     setError(null);
-    if (!presentationFile) {
+    if (!presentationFile && !untimed) {
       setError(strings.sources.notesAloneError);
       return;
     }
 
     const formData = new FormData();
-    formData.append("presentation", presentationFile);
+    if (presentationFile) formData.append("presentation", presentationFile);
+    if (untimed && notesFile) formData.append("notes", notesFile);
 
     if (pickerMode === "new") {
       if (!newSubjectName.trim()) {
@@ -205,7 +217,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
       });
       if (!res.ok) {
         const body = await res.json() as { error?: string };
-        setError(body.error ?? "Upload failed");
+        setError(body.error ?? strings.sources.uploadFailed);
         return;
       }
       const body = await res.json() as {
@@ -230,7 +242,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [presentationFile, guiaFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
+  }, [presentationFile, notesFile, untimed, guiaFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
 
   const canSubmit = !submitting && (pickerMode === "new" ? newSubjectName.trim() !== "" : selectedSubjectId !== "");
 
@@ -243,7 +255,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
       data-testid="sources-screen"
     >
       <div style={styles.toolbar}>
-        <button style={styles.backBtn} onClick={onBack}>
+        <button style={styles.backBtn} onClick={untimed ? onSealed : onBack} data-testid="sources-back">
           ← {strings.write.backToLibrary}
         </button>
         <h1 style={styles.title}>{strings.sources.title}</h1>
@@ -304,6 +316,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
                 <button
                   style={{ ...styles.backBtn, whiteSpace: "nowrap" as const }}
                   onClick={() => { setPickerMode("new"); setNewSubjectName(""); }}
+                  data-testid="new-subject-option"
                 >
                   {strings.sources.newSubjectOption}
                 </button>
@@ -359,6 +372,29 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
             )}
           </div>
 
+          {untimed && (
+            <div>
+              <div style={styles.fieldLabel}>{strings.sources.notesLabel}</div>
+              <div
+                style={dropZoneStyle(notesFile !== null)}
+                onClick={() => notesInputRef.current?.click()}
+                data-testid="notes-drop-zone"
+              >
+                {notesFile
+                  ? `${strings.sources.notesFileAccepted}: ${notesFile.name}`
+                  : strings.sources.notesDropHint}
+              </div>
+              <input
+                ref={notesInputRef}
+                type="file"
+                accept=".pdf,.md,.markdown,.docx,application/pdf,text/markdown"
+                style={{ display: "none" }}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) setNotesFile(f); }}
+                data-testid="notes-file-input"
+              />
+            </div>
+          )}
+
           {/* Presentation drop zone */}
           <div>
             <div style={styles.fieldLabel}>{strings.sources.presentationLabel}</div>
@@ -382,7 +418,7 @@ export function Sources({ lectureId, onSealed, onBack }: SourcesProps) {
             {/* (guia file input rendered inside the picker section above) */}
           </div>
 
-          {error && <p style={styles.error}>{error}</p>}
+          {error && <p style={styles.error} data-testid="sources-error">{error}</p>}
 
           <button
             style={canSubmit ? styles.submitBtn : styles.submitBtnDisabled}
