@@ -76,3 +76,29 @@ test("reopening an untimed lecture still in writing goes to Sources", async ({ p
   await page.getByTestId("open-lecture-button").first().click();
   await page.waitForSelector("[data-testid='sources-screen']");
 });
+
+test("untimed notes + audio seals, lists the audio, and Continue leads to the transcript check", async ({ page }) => {
+  await page.goto(srv.url);
+  await page.getByTestId("mode-untimed").check();
+  await page.getByTestId("new-lecture").click();
+  await page.waitForSelector("[data-testid='sources-screen']");
+  const lectureId = page.url().split("/").pop()!;
+
+  await page.getByTestId("new-subject-option").click();
+  await page.getByTestId("new-subject-input").fill("Anatomy");
+  await expect(page.getByTestId("audio1-drop-zone")).toBeVisible();
+  await expect(page.getByTestId("audio2-drop-zone")).toHaveCount(0);
+  await expect(page.getByText(/start time/i)).toHaveCount(0);
+
+  await page.getByTestId("notes-file-input").setInputFiles(path.join(FIXTURES, "notes.md"));
+  await page.getByTestId("audio1-file-input").setInputFiles(path.join(FIXTURES, "short_audio.wav"));
+  await expect(page.getByTestId("audio2-drop-zone")).toBeVisible();
+  await page.getByTestId("submit-sources").click();
+  await page.waitForSelector("[data-testid='slides-preview']");
+
+  const listed = await (await fetch(`${srv.url}/api/lectures/${lectureId}/audio-files`)).json() as { audioFiles: unknown[] };
+  expect(listed.audioFiles).toHaveLength(1);
+
+  await page.getByTestId("continue-after-seal").click();
+  await page.waitForURL(/#\/transcript-check\//);
+});

@@ -104,6 +104,7 @@ export function App() {
       <Sources
         lectureId={view.lectureId}
         onSealed={goToLibrary}
+        onTranscribed={() => goToTranscriptCheck(view.lectureId)}
         onBack={() => goToWrite(view.lectureId)}
       />
     );

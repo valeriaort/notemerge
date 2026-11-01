@@ -46,6 +46,13 @@ export const strings = {
     notesDropHint: "Click to choose your notes (PDF, Markdown or Word)",
     notesFileAccepted: "Notes ready",
     uploadFailed: "Upload failed",
+    audioLabel: "Lecture audio (optional)",
+    audioDropHint: "Click to choose the lecture recording",
+    audio2Label: "Second recording (optional)",
+    audio2DropHint: "Click to add a recording that continues after a break",
+    audioAccepted: "Audio ready",
+    transcribing: "Transcribing…",
+    transcribeFailed: "Transcription failed. Please try again.",
   },
   windows: {
     countDiffNotice: (windows: number, slides: number) =>
