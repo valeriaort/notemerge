@@ -68,6 +68,7 @@ function computeNotionBlocks(
     text: string;
     noteId: string | null;
     notionType: string;
+    italic: boolean;
     parentNoteId?: string;
   }
 
@@ -80,6 +81,7 @@ function computeNotionBlocks(
     const meta = block.noteId ? notesMeta.get(block.noteId) : null;
     finalFlat.push({
       text: block.text,
+      italic: block.weakMatch,
       noteId: block.noteId,
       notionType: meta ? toNotionType(meta.type, meta.level) : "paragraph",
       parentNoteId: meta?.parentId,
@@ -94,7 +96,7 @@ function computeNotionBlocks(
   const result: NotionExportBlock[] = [];
 
   for (const flat of finalFlat) {
-    const notionBlock: NotionExportBlock = { type: flat.notionType, text: flat.text, children: [] };
+    const notionBlock: NotionExportBlock = { type: flat.notionType, text: flat.text, ...(flat.italic ? { italic: true } : {}), children: [] };
     notionBlockMap.set(flat, notionBlock);
 
     if (flat.parentNoteId && finalNoteIds.has(flat.parentNoteId)) {

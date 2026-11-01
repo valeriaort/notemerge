@@ -1607,7 +1607,7 @@ export function hasUnresolvedConflicts(
   return row !== undefined;
 }
 
-export type FinalNoteBlock = { id: string; text: string };
+export type FinalNoteBlock = { id: string; text: string; italic: boolean };
 
 export function computeFinalNoteBlocks(
   db: Database.Database,
@@ -1626,7 +1626,7 @@ export function computeFinalNoteBlocks(
     if (block.reviewState === "reverted" || block.reviewState === "deleted") continue;
     if (block.origin === "conflict" && block.reviewState === "unresolved") continue;
     if (block.origin === "student" && block.noteId !== null && markerBlockIds.has(block.noteId)) continue;
-    result.push({ id: block.id, text: block.text });
+    result.push({ id: block.id, text: block.text, italic: block.weakMatch });
   }
   return result;
 }

@@ -4,7 +4,7 @@ import path from "path";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 import type { Lecture, MergedBlock, MergeRun } from "../../src/shared/types.js";
-import { FailableClassifier, FakeEmbeddingProvider, ScriptedWritingModel } from "../../src/providers/fakes.js";
+import { FailableClassifier, FakeEmbeddingProvider, ScriptedNotion, ScriptedWritingModel } from "../../src/providers/fakes.js";
 import type { ExtractedSlide } from "../../src/server/pdfExtraction.js";
 import { ensureDefaultUser, createSubject, sealLecture } from "../../src/server/db.js";
 
@@ -37,6 +37,7 @@ interface Setup {
   url: string;
   classifier: RecordingClassifier;
   writingModel: ScriptedWritingModel;
+  notion: ScriptedNotion;
 }
 
 // Untimed, presentation only: three slides, N1 about slide 1, N2 about slide 3, and N3
@@ -46,7 +47,8 @@ async function setup(): Promise<Setup> {
   const embeddings = new FakeEmbeddingProvider(6);
   const classifier = new RecordingClassifier();
   const writingModel = new ScriptedWritingModel();
-  server = await startTestServer({ embeddings, classifier, writingModel });
+  const notion = new ScriptedNotion();
+  server = await startTestServer({ embeddings, classifier, writingModel, notion });
   const url = server.url;
   const lecture = (await (
     await fetch(`${url}/api/lectures`, {
@@ -82,7 +84,7 @@ async function setup(): Promise<Setup> {
   const user = ensureDefaultUser(server.db);
   const subject = createSubject(server.db, "subj-wm", "Subject", user.id);
   sealLecture(server.db, lecture.id, subject.id, "/fake/slides.pdf");
-  return { lecture, url, classifier, writingModel };
+  return { lecture, url, classifier, writingModel, notion };
 }
 
 const base = (s: Setup): string => `${s.url}/api/lectures/${s.lecture.id}`;
@@ -200,3 +202,38 @@ describe("weak matches: review state", () => {
   });
 });
 
+
+describe("weak matches: italic in the final note and Notion export", () => {
+  type Final = Array<{ text: string; italic: boolean }>;
+  const finalBlocks = async (s: Setup): Promise<Final> =>
+    ((await (await fetch(`${base(s)}/final-note`)).json()) as { blocks: Final }).blocks;
+
+  it("marks only the kept weak match italic in the final note", async () => {
+    const s = await setup();
+    await merge(s);
+    const blocks = await finalBlocks(s);
+    expect(blocks.find((b) => b.text === "stray note about topic one")!.italic).toBe(true);
+    expect(blocks.filter((b) => b.text !== "stray note about topic one").every((b) => !b.italic)).toBe(true);
+  });
+
+  it("sends the kept weak match to Notion italic and omits a deleted one", async () => {
+    const s = await setup();
+    await merge(s);
+    await fetch(`${s.url}/api/notion/callback?code=c`);
+    const lecture = (await (await fetch(base(s))).json()) as Lecture;
+    await fetch(`${s.url}/api/subjects/${lecture.subjectId}/notion-page`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pageId: "parent-id" }),
+    });
+    expect((await fetch(`${base(s)}/export/notion`, { method: "POST" })).status).toBe(200);
+    const sent = s.notion.capturedChildPages[0]!.blocks;
+    expect(sent.find((b) => b.text === "stray note about topic one")!.italic).toBe(true);
+    expect(sent.filter((b) => b.text !== "stray note about topic one").every((b) => !b.italic)).toBe(true);
+
+    const n3 = (await mergedNote(s)).find((b) => b.noteId === "N3")!;
+    await patch(s, n3.id, { reviewState: "deleted" });
+    await fetch(`${base(s)}/export/notion`, { method: "POST" });
+    expect(s.notion.capturedChildPages[1]!.blocks.map((b) => b.text)).not.toContain("stray note about topic one");
+  });
+});

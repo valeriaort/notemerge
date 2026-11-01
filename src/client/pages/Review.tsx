@@ -8,7 +8,7 @@ interface ReviewProps {
   onExported?: () => void;
 }
 
-type FinalNoteBlock = { id: string; text: string };
+type FinalNoteBlock = { id: string; text: string; italic: boolean };
 
 const styles: Record<string, React.CSSProperties> = {
   container: { maxWidth: 800, margin: "0 auto", padding: "1rem" },
@@ -470,7 +470,7 @@ export function Review({ lectureId, onBack, onExported }: ReviewProps) {
             <div id="review-print-title" style={styles.printTitle}>{pdfTitle}</div>
             {finalBlocks === null && <p>Loading preview…</p>}
             {finalBlocks !== null && finalBlocks.map((b) => (
-              <div key={b.id} style={styles.cleanBlock}>{b.text}</div>
+              <div key={b.id} style={b.italic ? { ...styles.cleanBlock, fontStyle: "italic" } : styles.cleanBlock}>{b.text}</div>
             ))}
           </div>
         )}

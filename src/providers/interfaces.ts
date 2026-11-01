@@ -103,6 +103,8 @@ export interface NotionPage {
 export interface NotionExportBlock {
   type: string;
   text: string;
+  // Kept weak match: rendered with Notion's italic annotation
+  italic?: boolean;
   children: NotionExportBlock[];
 }
 

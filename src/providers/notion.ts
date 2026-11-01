@@ -7,6 +7,7 @@ const MAX_CHILDREN_PER_REQUEST = 100;
 
 interface NotionRichText {
   text: { content: string };
+  annotations?: { italic: boolean };
 }
 
 interface NotionBlockPayload {
@@ -35,8 +36,8 @@ interface NotionTokenResponse {
   access_token: string;
 }
 
-function makeRichText(text: string): NotionRichText[] {
-  return [{ text: { content: text } }];
+function makeRichText(text: string, italic = false): NotionRichText[] {
+  return italic ? [{ text: { content: text }, annotations: { italic: true } }] : [{ text: { content: text } }];
 }
 
 const SUPPORTED_NOTION_TYPES = new Set([
@@ -49,7 +50,7 @@ const SUPPORTED_NOTION_TYPES = new Set([
 
 function mapBlock(block: NotionExportBlock): NotionBlockPayload {
   const notionType = SUPPORTED_NOTION_TYPES.has(block.type) ? block.type : "paragraph";
-  const richText = makeRichText(block.text);
+  const richText = makeRichText(block.text, block.italic);
   const typeContent: Record<string, unknown> = { rich_text: richText };
 
   if (block.children.length > 0) {

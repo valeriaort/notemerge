@@ -331,6 +331,24 @@ describe("RealNotionProvider", () => {
       ]);
     });
 
+    it("adds the italic annotation to italic blocks only", async () => {
+      fetchSpy
+        .mockResolvedValueOnce(okJson(notionPageResult("i-id", "Page", "https://notion.so/i")))
+        .mockResolvedValueOnce(okJson({}));
+
+      const provider = new RealNotionProvider(CLIENT_ID, CLIENT_SECRET);
+      const blocks: NotionExportBlock[] = [
+        { type: "paragraph", text: "kept weak", italic: true, children: [] },
+        { type: "paragraph", text: "plain", children: [] },
+      ];
+      await provider.createChildPage(ACCESS_TOKEN, "parent-id", "Page", blocks);
+
+      const [, patchInit] = fetchSpy.mock.calls[1] as [string, RequestInit & { body: string }];
+      const body = JSON.parse(patchInit.body) as { children: Array<Record<string, { rich_text: unknown[] }>> };
+      expect(body.children[0]!["paragraph"]!.rich_text).toEqual([{ text: { content: "kept weak" }, annotations: { italic: true } }]);
+      expect(body.children[1]!["paragraph"]!.rich_text).toEqual([{ text: { content: "plain" } }]);
+    });
+
     it("maps heading_2 and heading_3 block types correctly", async () => {
       fetchSpy
         .mockResolvedValueOnce(okJson(notionPageResult("h-id", "Page", "https://notion.so/h")))

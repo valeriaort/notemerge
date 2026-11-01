@@ -348,7 +348,7 @@ describe("GET /api/lectures/:id/final-note — content", () => {
 
     const { blocks } = await getFinalNote(server.url, lecture.id);
     for (const b of blocks!) {
-      expect(Object.keys(b)).toEqual(["id", "text"]);
+      expect(Object.keys(b)).toEqual(["id", "text", "italic"]);
     }
   });
 
