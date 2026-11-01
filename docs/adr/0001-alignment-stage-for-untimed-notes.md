@@ -1,6 +1,6 @@
 # 0001: An alignment stage so notes without timestamps can be merged
 
-Status: accepted (2026-11-01)
+Status: accepted (2026-11-01). Decision 6 revised the same day: the mapping fixer by note block was dropped (see Alternatives considered).
 
 ## Context
 
@@ -26,7 +26,7 @@ Students also have notes that were not typed live in NoteMerge: notes written el
 
 5. **Weak matches.** A block's alignment score is its highest similarity to any item in its assigned window; headings and very short items follow their neighbours and are never weak on their own score. A block below the threshold is a weak match. It is conflict-checked against the pool of its three most similar windows, ignoring order. A conflict gives a normal yellow flag; otherwise the block is shown gray in review with keep (rendered italic) or delete, defaulting to keep and never blocking export, and the italic is carried into the Notion and PDF export. Weak matches still count as coverage context for neighbouring windows.
 
-6. **Threshold calibration.** The weak-match threshold is configuration, set from 2–3 lectures aligned by hand (each block labelled with its correct window or "not taught") as the lowest value at which about 95% of placed blocks land in the correct window. Precision on placed blocks is preferred because a misplaced block silently causes false conflicts and false "covered" verdicts, while a false weak match only costs one visible click. The mapping fixer (on demand from Sources; blocks and windows in two keyboard-first columns) lets the student place a block by hand, which makes it a normal placed block; its corrections double as labelled data.
+6. **Threshold calibration.** The weak-match threshold is configuration, set from 2–3 lectures aligned by hand (each block labelled with its correct window or "not taught") as the lowest value at which about 95% of placed blocks land in the correct window. Precision on placed blocks is preferred because a misplaced block silently causes false conflicts and false "covered" verdicts, while a false weak match only costs one visible click. The labelled lectures come from a developer tool: export a lecture's alignment, label each block by hand, and run an evaluation script that reports placed-block precision at each candidate threshold. Students never place note blocks by hand.
 
 7. **Transcription for untimed notes.** There is no per-chunk mini glossary before alignment, so:
    1. pass 1 prompts every chunk with one lecture glossary taken from the slides and notes (rare terms first, 224-token cap);
@@ -45,12 +45,13 @@ Students also have notes that were not typed live in NoteMerge: notes written el
 - **Lexical similarity (BM25) instead of embeddings.** Rejected: 0.082 vs 0.836 on the same Spanish medical slice, and the benchmark found that adding BM25 to `bge-m3` hurt concept discrimination.
 - **Forcing weak matches into their best window, or blocking the merge until the student places them.** Rejected: notes from a previous year routinely contain content that was not taught this year, so forcing creates confident false conflicts and blocking makes the merge a chore.
 - **A second, reference notes document per lecture** (last year's notes as a third source beside slides and transcript, citable by ID). Deferred, not rejected: it fits "no source outranks another", but this round keeps one sealed notes document.
+- **A mapping fixer by note block for the student** (blocks and windows in two keyboard-first columns, opened on demand). Rejected. For weak matches it adds little: they are already conflict-checked against their three most similar windows, already count as coverage context, and the merged note keeps block order whatever the window. The costly error, a block placed confidently in the wrong window, is not highlighted, so the student would catch it only by auditing every block before every merge. With audio there was also no moment to open it: the final alignment needs the corrected transcript, and the merge starts as soon as the transcript check clears. Calibration labels come from a developer tool instead.
 - **Whole-lecture pool for weak-match conflict checks.** Rejected: a 2-hour transcript can exceed Jev's 32k-token limit for state plus one question.
 
 ## Consequences
 
 - The merge no longer depends on how windows were built, so the time-based path and the content path share every stage after alignment.
-- The refactor lands first and changes no behaviour: introduce the persisted window list and time alignment, and switch `processWindow`, Haiku placement and `buildChunkPrompt` to read it with all existing tests green. Then, in order: converting PDF, Markdown and DOCX into note blocks; `EmbeddingProvider` with `bge-m3` and a fake; content alignment, weak-match scoring and the three-most-similar-windows pool; two-pass transcription; the UI (lecture mode, mapping fixer by block, gray review state, italic export).
+- The refactor lands first and changes no behaviour: introduce the persisted window list and time alignment, and switch `processWindow` and Haiku placement to read it with all existing tests green. `buildChunkPrompt` keeps its time-range selection for live notes: transcription runs before alignment, so there is no window list to read yet; untimed notes get their prompts from the lecture glossary and the provisional alignment (decision 7). Then, in order: converting PDF, Markdown and DOCX into note blocks; `EmbeddingProvider` with `bge-m3` and a fake; content alignment, weak-match scoring and the three-most-similar-windows pool; two-pass transcription; the UI (lecture mode, gray review state, italic export); the alignment export and evaluation script for calibration.
 - Review gains a third highlight (gray), and the final note is no longer free of all formatting from review: kept weak matches are italic.
 - First run downloads the `bge-m3` model (about 0.5 GB).
 - A new threshold (weak match) joins the configuration to tune on real lectures, and alignment accuracy needs its own evaluation with hand-aligned lectures.
