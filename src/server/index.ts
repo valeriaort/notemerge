@@ -8,7 +8,7 @@ const dataDir = path.resolve(config.dataDir);
 const dbPath = path.join(dataDir, "notemerge.db");
 const db = openDb(dbPath);
 
-const providers = createProviders(config);
+const providers = createProviders(config, db);
 
 const app = createApp(db, dataDir, providers);
 

@@ -1,13 +1,15 @@
+import { createHash } from "crypto";
 import type {
   SpeechToTextProvider,
   ClassifierProvider,
   WritingModelProvider,
   NotionProvider,
+  EmbeddingProvider,
   NotionPage,
   NotionExportBlock,
   Providers,
 } from "./interfaces.js";
-import { TranscriptionHttpError, ClassifierRetryableError } from "./interfaces.js";
+import { TranscriptionHttpError, ClassifierRetryableError, EmbeddingError } from "./interfaces.js";
 import type {
   TranscriptionResult,
   WhisperSegment,
@@ -282,11 +284,40 @@ export class ScriptedNotion implements NotionProvider {
   }
 }
 
+// Scriptable embeddings: set vectors per text (`vectors`) so a test can say
+// "this note block is closest to slide S003". Unscripted texts get a
+// deterministic vector derived from the text. Every call is recorded.
+export class FakeEmbeddingProvider implements EmbeddingProvider {
+  vectors = new Map<string, number[]>();
+  calls: string[][] = [];
+  failWith: Error | null = null;
+
+  constructor(private readonly dimensions = 8) {}
+
+  async embed(texts: string[]): Promise<number[][]> {
+    this.calls.push([...texts]);
+    if (this.failWith) throw this.failWith;
+    return texts.map((t) => this.vectors.get(t) ?? this.defaultVector(t));
+  }
+
+  get embeddedTexts(): string[] {
+    return this.calls.flat();
+  }
+
+  private defaultVector(text: string): number[] {
+    const hash = createHash("sha256").update(text).digest();
+    const raw = Array.from({ length: this.dimensions }, (_, i) => hash[i] / 255 + 0.01);
+    const norm = Math.sqrt(raw.reduce((sum, x) => sum + x * x, 0));
+    return raw.map((x) => x / norm);
+  }
+}
+
 export function createFakeProviders(): Providers {
   return {
     speechToText: new FakeSpeechToText(),
     classifier: new FakeClassifier(),
     writingModel: new FakeWritingModel(),
     notion: new FakeNotion(),
+    embeddings: new FakeEmbeddingProvider(),
   };
 }
