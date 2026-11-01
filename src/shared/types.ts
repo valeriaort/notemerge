@@ -177,6 +177,26 @@ export type WeakMatch = {
   similarWindowIds: string[];
 };
 
+// Alignment score of every block that content alignment matched on its own text (not headings
+// or short items, which follow a neighbour). `placed` is false when the order-preserving
+// alignment skipped the block. Kept for calibrating the weak-match threshold.
+export type BlockScore = {
+  blockId: string;
+  text: string;
+  windowId: string;
+  score: number;
+  placed: boolean;
+};
+
+// Developer tool export for hand labelling: set correctWindowId on each block to the correct
+// window id, or "not taught".
+export type AlignmentExport = {
+  lectureId: string;
+  weakMatchThreshold: number;
+  windows: Array<{ id: string; mappedSlides: string[]; sentenceIds: string[] }>;
+  blocks: Array<BlockScore & { weak: boolean; correctWindowId: string | null }>;
+};
+
 // Stored override entry (no blockIds — always recomputed from notes)
 export type WindowOverride = {
   id: string;

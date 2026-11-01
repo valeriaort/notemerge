@@ -25,6 +25,7 @@ import type {
   Subject,
   AlignedWindow,
   WeakMatch,
+  BlockScore,
   TranscriptRun,
   Pass2Status,
   TranscriptRunState,
@@ -281,6 +282,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN alignment TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN weak_matches TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE merge_runs ADD COLUMN block_scores TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN weak_match INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
@@ -1154,6 +1156,22 @@ export function saveWeakMatches(
 ): void {
   db.prepare("UPDATE merge_runs SET weak_matches = ? WHERE id = ?")
     .run(JSON.stringify(weakMatches), mergeRunId);
+}
+
+export function saveBlockScores(
+  db: Database.Database,
+  mergeRunId: string,
+  blockScores: BlockScore[],
+): void {
+  db.prepare("UPDATE merge_runs SET block_scores = ? WHERE id = ?")
+    .run(JSON.stringify(blockScores), mergeRunId);
+}
+
+export function getBlockScores(db: Database.Database, mergeRunId: string): BlockScore[] {
+  const row = db
+    .prepare("SELECT block_scores FROM merge_runs WHERE id = ?")
+    .get(mergeRunId) as { block_scores: string | null } | undefined;
+  return row?.block_scores ? (JSON.parse(row.block_scores) as BlockScore[]) : [];
 }
 
 export function getWeakMatches(db: Database.Database, mergeRunId: string): WeakMatch[] {

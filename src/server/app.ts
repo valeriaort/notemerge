@@ -1,3 +1,4 @@
+import { alignmentExportRoutes } from "./routes/alignmentExport.js";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -38,6 +39,7 @@ export function createApp(
   app.use("/api/lectures", abbreviationLectureRoutes(db));
   app.use("/api/lectures", windowRoutes(db));
   app.use("/api/lectures", mergeRoutes(db, _providers, cfg));
+  app.use("/api/lectures", alignmentExportRoutes(db, cfg));
   app.use("/api/lectures", transcriptionRoutes(db, _providers, cfg));
   app.use("/api/lectures", transcriptCheckRoutes(db, _providers, cfg));
   app.use("/api/lectures", reviewLockRoutes(db));

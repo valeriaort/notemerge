@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:browser": "vite build && playwright test",
+    "evaluate-alignment": "tsx scripts/evaluate-alignment.ts",
     "start": "node dist/server/index.js"
   },
   "dependencies": {
