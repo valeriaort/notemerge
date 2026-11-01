@@ -1,6 +1,6 @@
 # NoteMerge: settled design
 
-Decisions reached in the grilling session. Vocabulary lives in `../CONTEXT.md` (glossary only); this file records behaviour and rationale. Source brief: `Product Description.pdf`.
+Decisions reached in the grilling session. Vocabulary lives in `../CONTEXT.md` (glossary only); this file records behaviour and rationale. Source brief: `Product Description.pdf`. Untimed notes and the alignment stage: `adr/0001-alignment-stage-for-untimed-notes.md` (summarised under "Untimed notes and alignment" below).
 
 ## Scope
 
@@ -12,14 +12,15 @@ Decisions reached in the grilling session. Vocabulary lives in `../CONTEXT.md` (
 ## Lecture and uploads
 
 - A lecture is one class session: one notes document, at most one presentation, at most one audio recording (up to two files, about 90-100 minutes total in practice).
-- Notes are written in BlockNote before any subject is chosen; the subject is picked (or created with "+ new subject") at upload.
+- The notes document is either live notes (written in NoteMerge) or untimed notes (uploaded), chosen when the lecture is created. The sections below describe live notes unless they say otherwise; untimed notes are covered under "Untimed notes and alignment".
+- Live notes are written in BlockNote before any subject is chosen; the subject is picked (or created with "+ new subject") at upload.
 - Valid uploads: notes + presentation; notes + presentation + audio; notes + audio. Notes alone are rejected at upload. A presentation without notes is not offered.
 - Presentation: PDF, 60+ pages, text only (images ignored). Each slide is enumerated (`S013`) and each bullet (`S013-B02`).
 - Bullet extraction is deterministic (no LLM): text per page in reading order; lines repeating on more than about 50% of pages and bare page numbers are dropped; the largest-font top line is the slide title, stored but not a bullet; a line starting with a bullet glyph or number starts a new bullet, other lines join the previous bullet while it lacks terminal punctuation; nesting is flattened. A slide with no text has no bullets (its window is judged from the transcript only, labeled by slide number). A PDF with no extractable text on most pages is rejected as scanned images; OCR is out of scope.
 
 ## Time model
 
-- Notes record wall-clock time (Europe/Madrid) at creation and edit. A note block's first-edit time places it in a slide window; last-edit time is stored but never used for placement.
+- Notes record wall-clock time (Europe/Madrid) at creation and edit. A note block's first-edit time places it in a window; last-edit time is stored but never used for placement.
 - Notes are sealed (read-only) at upload. All later changes happen on the merged note.
 - The user enters the recording start time for every audio file. A second file is a continuation after a break, never chained automatically. File creation time is not trusted.
 - If the start time is unknown, the user may align one recognizable audio moment with a slide marker (e.g. audio 04:20 = marker 09:14:20, so start is about 09:10:00).
@@ -36,12 +37,23 @@ Decisions reached in the grilling session. Vocabulary lives in `../CONTEXT.md` (
 ## Slide markers and windows
 
 - The student types `//` at each slide transition; it is saved as a timestamped event.
-- A slide window runs from one marker's timestamp to the next, so windows tile the lecture with no gaps. An empty window (nothing written) is still a window.
+- With live notes, a window runs from one marker's timestamp to the next, so windows tile the lecture with no gaps. An empty window (nothing written) is still a window.
 - A marker means "the next slide starts now": the first `//` is the transition from slide 1 to slide 2. N markers give N+1 windows. Lecture start = earliest of the first note block's first-edit time and the first audio file's recording start time; lecture end = latest of the last note edit and the last audio file's end. Window 1 starts at lecture start, the last window ends at lecture end. A marker typed right at lecture start yields an empty window 1 that is dropped.
 - Windows map to slides sequentially by default (window n = slide n). The user can reassign, merge, or delete windows by hand; a slide may span several windows and a window several slides.
 - Without a presentation, typed markers still bound windows (labeled by number). Without markers, fixed 4-minute windows are used.
 - A transcript sentence belongs to the window containing its start time (clock start from the Whisper segment timestamps within its chunk).
 - Context margin (configurable constant, default 1 minute): notes and transcript are also retrieved 1 minute before and after the window, as context only. Only items inside the window are judged, so each item is flagged at most once. The margin applies to both the coverage check and the conflict check.
+
+## Untimed notes and alignment
+
+- Untimed notes are notes written elsewhere (e.g. Notion) or handed down from a previous year, uploaded as a PDF with a text layer, Markdown or DOCX and converted deterministically into note blocks that keep headings, lists and paragraphs. Scanned PDFs are rejected (no OCR). Notes with neither presentation nor audio are rejected, as for live notes.
+- Untimed notes replace live notes as the sealed notes. They are treated like the student's own: unknown tokens go into the one abbreviation dictionary, and Haiku writes in the notes' register. One notes document per lecture; a second, reference notes document is deferred.
+- An Aligned stage runs after the transcript check and persists the windows as lists of slide, sentence and note block IDs (judged and context). The merge, Haiku placement and review read only these lists, so they work the same for both modes. Time alignment for live notes reproduces the windows described above; content alignment serves untimed notes.
+- Content alignment: a local `bge-m3` (behind an embedding interface, hosted API as a config swap) embeds slides, transcript spans of about 30 seconds, and note blocks with their heading path. An order-preserving alignment that allows skips matches transcript spans to slides (presentation + audio), then note blocks to the windows. Audio only: windows of about 4 minutes cut at sentence boundaries. Presentation only: one window per slide. Context is the neighbouring window on each side.
+- Why local `bge-m3`: hosted embeddings would cost well under $0.01 per lecture, but no benchmark shows them better on Spanish medical text; `bge-m3` scores 0.836 nDCG@10 on the Spanish slice of MMed-Bench-IR, against 0.082 for BM25. Local also means deterministic, no key, no retry or pause.
+- Weak match: a block whose highest similarity to its window is below the threshold (headings and very short items follow their neighbours). It is conflict-checked against its three most similar windows, ignoring order, because last year's content often moved rather than vanished. A conflict is a normal yellow flag; otherwise the block is gray in review with keep (italic) or delete, default keep, never blocking export, and the italic is carried into the export as a lasting "not in this year's class" marker. Weak matches still count as coverage context.
+- The weak-match threshold is set from 2–3 lectures aligned by hand as the lowest value at which about 95% of placed blocks land correctly. Precision wins because a misplaced block silently produces false conflicts and false "covered" verdicts, while a false weak match costs one visible click. The mapping fixer places blocks by hand and its corrections double as labelled data.
+- Transcription for untimed notes: pass 1 prompts every chunk with a lecture glossary from the slides and notes; a provisional alignment gives each window a mini glossary; pass 2 re-transcribes flagged chunks once with it; the student checks the transcript; the final alignment runs on the corrected transcript, because re-transcription retires sentence IDs and corrections change the text that drives matching. No recording start time is asked for.
 
 ## Abbreviations and glossaries
 
@@ -98,19 +110,21 @@ Decisions reached in the grilling session. Vocabulary lives in `../CONTEXT.md` (
 - Conflict representation: the flagged block stores both versions. Unresolved, it shows the student's original text in yellow; the proposed rewrite is in the hover widget and the dock, and the text is never silently replaced. `K` keeps the original and resolves; `E` replaces the block's text with the rewrite and resolves, after which it is ordinary editable text (tweaking is normal editing, there is no separate edit mode). A resolved conflict can be reopened from the dock until export. Export takes only the block's current text. One flag per note block: the Jev conflict check is per block, so all conflicting sources for a block are cited on a single flag with a single rewrite.
 - Review decisions are saved so the student can resume later.
 - Export is blocked until every conflict flag is resolved.
+- Weak matches (untimed notes only) are gray blocks with keep (italic) or delete, default keep; they never block export.
 - Playback only for material from a transcript sentence (transcript-derived additions and conflicts that cite one). Student note blocks and slide bullets get no playback. No play control when the lecture has no audio.
-- Final note: clean, with no review highlights and no citations. Exported to Notion (one-way push to a new page via the student's own OAuth connection; the hover widgets cannot exist there) or to PDF.
+- Final note: clean, with no review highlights and no citations; the one exception is that kept weak matches stay italic. Exported to Notion (one-way push to a new page via the student's own OAuth connection; the hover widgets cannot exist there) or to PDF.
 - Notion: a public Notion integration registered once by the developer; OAuth redirects to `localhost` on the app's port and the token is stored in local config. The student shares their root page (e.g. `uni`) on the consent screen, which grants access to its children. Each subject stores a Notion parent page: the first export from a subject opens a page picker (search pre-filled with the subject name, exact title match pre-selected, or "Create a page named <subject> under <root>"), then it is remembered and editable in subject settings. Each export creates a new child page of the subject's page (so the structure is root / subject / lesson), titled with the lecture date (with a counter for several sessions in a day); exporting twice makes two pages and the lecture records the last URL. A missing or unshared stored page reports the error and reopens the picker. BlockNote blocks map one-to-one to Notion blocks (paragraphs, headings, bulleted and numbered lists, nested children), with unsupported types falling back to paragraphs; slide markers are not exported. A failed push leaves the final note unchanged and allows retry or PDF.
 - PDF: rendered by the browser's print engine from the clean preview via a "Save as PDF" button and a print stylesheet; title is "Subject: lecture date".
 
 ## Language
 
-- UI in English, strings centralised so a Spanish UI can be added later. Whisper is called with `language: es` and a Spanish mini glossary prompt; Catalan and code-switching are out of scope. Jev instructions and criteria are in English with Spanish state and targets. Haiku's system prompt is in English; all added and rewritten note text is Spanish, matching the student's terse register and using the student's abbreviations where the dictionary shows them.
+- UI in English, strings centralised so a Spanish UI can be added later. Whisper is called with `language: es` and a Spanish mini glossary prompt; Catalan and code-switching are out of scope. Jev instructions and criteria are in English with Spanish state and targets. Haiku's system prompt is in English; all added and rewritten note text is Spanish, matching the sealed notes' terse register and using the student's abbreviations where the dictionary shows them.
 
 ## Left to tune on real lectures
 
 - Flag thresholds and the confidence cutoff for noise.
 - Chunk length (about 2 minutes is a starting point).
+- Weak-match threshold, transcript span length and audio-only window size for content alignment, from hand-aligned lectures.
 
 ## UI (settled by prototype)
 
