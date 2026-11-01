@@ -1,5 +1,5 @@
 import type { EmbeddingProvider } from "../providers/interfaces.js";
-import type { AbbreviationPair, AlignedWindow, NotesDocument, Sentence, WeakMatch } from "../shared/types.js";
+import type { AbbreviationPair, AlignedWindow, BlockScore, NotesDocument, Sentence, WeakMatch } from "../shared/types.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import type { ExtractedSlide } from "./pdfExtraction.js";
 
@@ -38,6 +38,7 @@ export interface ContentAlignmentInput {
 export interface ContentAlignmentResult {
   windows: AlignedWindow[];
   weakMatches: WeakMatch[];
+  blockScores: BlockScore[];
 }
 
 type Span = { startMs: number; sentenceIds: string[]; text: string };
@@ -294,6 +295,7 @@ export async function contentAlign(input: ContentAlignmentInput): Promise<Conten
 
   const blockWindow = new Map<string, number>();
   const weakMatches: WeakMatch[] = [];
+  const blockScores: BlockScore[] = [];
   const weakIds = new Set<string>();
   units.forEach((u, idx) => {
     if (!u.text && !u.isHeading) {
@@ -313,6 +315,7 @@ export async function contentAlign(input: ContentAlignmentInput): Promise<Conten
     const row = simMatrix[matchable.indexOf(u)]!;
     const score = row[assigned] ?? 0;
     blockWindow.set(u.id, assigned);
+    blockScores.push({ blockId: u.id, text: u.text, windowId: windowId(assigned), score, placed: placed !== undefined });
     if (placed === undefined || score < opts.weakMatchThreshold) {
       weakIds.add(u.id);
       const similarWindowIds = row
@@ -351,7 +354,7 @@ export async function contentAlign(input: ContentAlignmentInput): Promise<Conten
     };
   });
 
-  return { windows, weakMatches };
+  return { windows, weakMatches, blockScores };
 }
 
 export function windowId(index: number): string {

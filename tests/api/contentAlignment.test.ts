@@ -3,7 +3,8 @@ import { writeFileSync } from "fs";
 import path from "path";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
-import type { AlignedWindow, Lecture, MergedBlock, WeakMatch } from "../../src/shared/types.js";
+import { evaluateAlignment, formatReport } from "../../src/server/alignmentEvaluation.js";
+import type { AlignmentExport, AlignedWindow, Lecture, MergedBlock, WeakMatch } from "../../src/shared/types.js";
 import type { WritingModelProvider } from "../../src/providers/interfaces.js";
 import { FakeEmbeddingProvider, FakeWritingModel, ScriptedClassifier } from "../../src/providers/fakes.js";
 import type { ExtractedSlide } from "../../src/server/pdfExtraction.js";
@@ -393,5 +394,69 @@ describe("content alignment: weak-match threshold", () => {
     expect(weak[0]!.score).toBeCloseTo(0.6, 5);
     expect(weak[0]!.windowId).toBe("W001");
     expect(weak[0]!.similarWindowIds).toEqual(["W001"]);
+  });
+});
+
+describe("alignment export and evaluation (calibration tool)", () => {
+  it("exports every scored block with window, score and weak state, ready for labelling", async () => {
+    const s = await setup({
+      slides: [slide(1), slide(2)],
+      notes: [
+        { id: "N1", text: "note about slide one" },
+        { id: "N2", text: "partly related note" },
+      ],
+    });
+    s.embeddings.vectors.set("bullet 1", axis(0));
+    s.embeddings.vectors.set(slideText(1), axis(0));
+    s.embeddings.vectors.set("bullet 2", axis(2));
+    s.embeddings.vectors.set(slideText(2), axis(2));
+    s.embeddings.vectors.set("note about slide one", axis(0));
+    s.embeddings.vectors.set("partly related note", axis(2, { 1: 4 / 3 }));
+    await merge(s);
+    const res = await fetch(`${s.url}/api/lectures/${s.lecture.id}/alignment/export`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AlignmentExport;
+    expect(body.weakMatchThreshold).toBe(0.5);
+    expect(body.windows.map((w) => w.id)).toEqual(["W001", "W002"]);
+    expect(body.blocks.map((b) => [b.blockId, b.windowId, b.weak, b.correctWindowId])).toEqual([
+      ["N1", "W001", false, null],
+      ["N2", "W002", false, null],
+    ]);
+    expect(body.blocks[1]!.score).toBeCloseTo(0.6, 5);
+    expect(body.blocks[1]!.text).toBe("partly related note");
+  });
+
+  it("rejects the export for live lectures", async () => {
+    server = await startTestServer({});
+    const lecture = (await (
+      await fetch(`${server.url}/api/lectures`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+    ).json()) as Lecture;
+    const res = await fetch(`${server.url}/api/lectures/${lecture.id}/alignment/export`);
+    expect(res.status).toBe(409);
+  });
+
+  it("reports precision and weak-match rate per threshold from labelled exports", () => {
+    const block = (blockId: string, score: number, windowId: string, correctWindowId: string | null, placed = true) => ({
+      blockId, text: blockId, windowId, score, placed, weak: false, correctWindowId,
+    });
+    const exp: AlignmentExport = {
+      lectureId: "L",
+      weakMatchThreshold: 0.5,
+      windows: [],
+      blocks: [
+        block("A", 0.9, "W001", "W001"),
+        block("B", 0.6, "W002", "W002"),
+        block("C", 0.4, "W002", "W003"), // wrong window, low score
+        block("D", 0.3, "W003", "not taught"),
+        block("E", 0.8, "W004", null, false), // skipped: weak at every threshold
+      ],
+    };
+    const r = evaluateAlignment([exp], { thresholds: [0.2, 0.5], targetPrecision: 0.95 });
+    expect(r.rows[0]).toMatchObject({ threshold: 0.2, placedBlocks: 4, precision: 0.5 });
+    expect(r.rows[0]!.weakMatchRate).toBeCloseTo(0.2);
+    expect(r.rows[1]).toMatchObject({ threshold: 0.5, placedBlocks: 2, precision: 1 });
+    expect(r.rows[1]!.weakMatchRate).toBeCloseTo(0.6);
+    expect(r.recommendedThreshold).toBe(0.5);
+    expect(formatReport(r)).toContain("Lowest threshold reaching 95.0% precision: 0.50");
   });
 });

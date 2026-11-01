@@ -13,6 +13,7 @@ import type {
   Sentence,
   AlignedWindow,
   WeakMatch,
+  BlockScore,
   WindowResult,
   WritingOperation,
 } from "../shared/types.js";
@@ -32,6 +33,7 @@ import {
   listSentencesByLecture,
   saveAlignment,
   saveWeakMatches,
+  saveBlockScores,
   saveVerdicts,
   updateLectureStage,
   updateMergeRunState,
@@ -852,8 +854,9 @@ export async function mergeLecture(
   const contextMarginMs = config.contextMarginMs ?? 60000;
   let windows: AlignedWindow[];
   let weakMatches: WeakMatch[] = [];
+  let blockScores: BlockScore[] = [];
   if (lecture.mode === "untimed") {
-    ({ windows, weakMatches } = await contentAlign({
+    ({ windows, weakMatches, blockScores } = await contentAlign({
       slides,
       sentences: activeSentences,
       notesData,
@@ -872,7 +875,10 @@ export async function mergeLecture(
   }
   const mergeRun = createMergeRun(db, uuidv4(), lectureId);
   saveAlignment(db, mergeRun.id, windows);
-  if (lecture.mode === "untimed") saveWeakMatches(db, mergeRun.id, weakMatches);
+  if (lecture.mode === "untimed") {
+    saveWeakMatches(db, mergeRun.id, weakMatches);
+    saveBlockScores(db, mergeRun.id, blockScores);
+  }
   const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
   const concurrency = config.mergeWindowConcurrency ?? 4;
   const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;
