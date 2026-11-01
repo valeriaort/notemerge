@@ -45,6 +45,12 @@ export function App() {
       if (res.ok) {
         const lecture = await res.json() as Lecture;
         switch (lecture.stage) {
+          case "writing":
+            if (lecture.mode === "untimed") {
+              window.location.hash = `/sources/${id}`;
+              return;
+            }
+            break;
           case "sources":
           case "sealed":
             window.location.hash = `/sources/${id}`;

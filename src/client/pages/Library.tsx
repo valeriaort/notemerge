@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { Lecture } from "../../shared/types.js";
+import type { Lecture, LectureMode } from "../../shared/types.js";
 import { strings } from "../../shared/strings.js";
 
 interface LibraryProps {
@@ -21,6 +21,7 @@ const styles: Record<string, React.CSSProperties> = {
 export function Library({ onOpen }: LibraryProps) {
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState<LectureMode>("live");
 
   useEffect(() => {
     fetch("/api/lectures")
@@ -33,7 +34,11 @@ export function Library({ onOpen }: LibraryProps) {
   }, []);
 
   async function createLecture() {
-    const res = await fetch("/api/lectures", { method: "POST" });
+    const res = await fetch("/api/lectures", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
     if (!res.ok) return;
     const lecture: Lecture = await res.json();
     onOpen(lecture.id);
@@ -45,9 +50,27 @@ export function Library({ onOpen }: LibraryProps) {
     <div style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>{strings.library.title}</h1>
-        <button style={styles.button} onClick={createLecture}>
-          {strings.library.newLecture}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <fieldset style={{ border: "none", display: "flex", gap: "0.75rem", fontSize: "0.85rem" }} data-testid="lecture-mode">
+            <legend style={{ position: "absolute", left: -9999 }}>{strings.library.modeLabel}</legend>
+            {(["live", "untimed"] as const).map((m) => (
+              <label key={m} style={{ cursor: "pointer" }}>
+                <input
+                  type="radio"
+                  name="lecture-mode"
+                  value={m}
+                  checked={mode === m}
+                  onChange={() => setMode(m)}
+                  data-testid={`mode-${m}`}
+                />{" "}
+                {m === "live" ? strings.library.modeLive : strings.library.modeUntimed}
+              </label>
+            ))}
+          </fieldset>
+          <button style={styles.button} onClick={createLecture} data-testid="new-lecture">
+            {strings.library.newLecture}
+          </button>
+        </div>
       </div>
       {lectures.length === 0 ? (
         <p style={styles.empty}>{strings.library.empty}</p>

@@ -8,6 +8,9 @@ export const strings = {
     empty: "No lectures yet. Start one to begin.",
     lectureDate: "Started",
     openLecture: "Open",
+    modeLabel: "Notes",
+    modeLive: "Write live notes",
+    modeUntimed: "Upload notes",
   },
   write: {
     placeholder: "Start typing your notes here...",
@@ -39,6 +42,10 @@ export const strings = {
     fileAccepted: "PDF ready",
     slidesExtracted: "slides extracted",
     continueButton: "Continue",
+    notesLabel: "Notes file",
+    notesDropHint: "Click to choose your notes (PDF, Markdown or Word)",
+    notesFileAccepted: "Notes ready",
+    uploadFailed: "Upload failed",
   },
   windows: {
     countDiffNotice: (windows: number, slides: number) =>
