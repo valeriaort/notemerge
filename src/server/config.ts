@@ -22,6 +22,15 @@ export interface Config {
     noiseMinProbability: number;
   };
   contextMarginMs: number;
+  // Content alignment (untimed notes); defaults in contentAlignment.ts. weakMatchThreshold is a
+  // placeholder until the evaluation sets it.
+  contentAlignment?: {
+    spanMs?: number;
+    audioWindowMs?: number;
+    shortItemChars?: number;
+    weakMatchThreshold?: number;
+    skipFloor?: number;
+  };
   mergeWindowConcurrency: number;
   mergeWindowRetryAttempts?: number;
   mergeWindowRetryBaseMs?: number;

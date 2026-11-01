@@ -12,6 +12,7 @@ import type {
   NotesDocument,
   Sentence,
   AlignedWindow,
+  WeakMatch,
   WindowResult,
   WritingOperation,
 } from "../shared/types.js";
@@ -30,14 +31,16 @@ import {
   listEditListEntries,
   listSentencesByLecture,
   saveAlignment,
+  saveWeakMatches,
   saveVerdicts,
   updateLectureStage,
   updateMergeRunState,
   updateWindowResultCoverage,
   updateWindowResultConflict,
 } from "./db.js";
-import { resolveWindows } from "./lectureWindows.js";
+import { getAudioBounds, resolveWindows } from "./lectureWindows.js";
 import { timeAlign } from "./timeAlignment.js";
+import { contentAlign } from "./contentAlignment.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import type { ExtractedSlide, SlideBullet } from "./pdfExtraction.js";
 
@@ -843,16 +846,33 @@ export async function mergeLecture(
   const sentenceMap = new Map<string, Sentence>(activeSentences.map((s) => [s.id, s]));
 
   const notesData = JSON.parse(lecture.notesData) as NotesDocument;
-  const mergeRun = createMergeRun(db, uuidv4(), lectureId);
 
+  // Align before the run exists: an embedding failure is an explicit error and must not leave
+  // a half-started run behind.
   const contextMarginMs = config.contextMarginMs ?? 60000;
-  const windows = timeAlign(
-    resolveWindows(db, lecture, slides.length),
-    notesData,
-    activeSentences,
-    contextMarginMs,
-  );
+  let windows: AlignedWindow[];
+  let weakMatches: WeakMatch[] = [];
+  if (lecture.mode === "untimed") {
+    ({ windows, weakMatches } = await contentAlign({
+      slides,
+      sentences: activeSentences,
+      notesData,
+      abbreviationPairs: listAbbreviationPairs(db),
+      audioBounds: getAudioBounds(db, lectureId),
+      embeddings: providers.embeddings,
+      options: config.contentAlignment,
+    }));
+  } else {
+    windows = timeAlign(
+      resolveWindows(db, lecture, slides.length),
+      notesData,
+      activeSentences,
+      contextMarginMs,
+    );
+  }
+  const mergeRun = createMergeRun(db, uuidv4(), lectureId);
   saveAlignment(db, mergeRun.id, windows);
+  if (lecture.mode === "untimed") saveWeakMatches(db, mergeRun.id, weakMatches);
   const noiseThreshold = config.thresholds?.noiseMinProbability ?? 0.95;
   const concurrency = config.mergeWindowConcurrency ?? 4;
   const maxRetryAttempts = config.mergeWindowRetryAttempts ?? 3;

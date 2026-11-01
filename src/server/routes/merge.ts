@@ -5,6 +5,7 @@ import type { Providers } from "../../providers/interfaces.js";
 import type { Config } from "../config.js";
 import {
   getAlignment,
+  getWeakMatches,
   getLecture,
   getMergeRunByLectureId,
   listMergedBlocks,
@@ -91,7 +92,7 @@ export function mergeRoutes(
       return;
     }
 
-    res.json({ windows });
+    res.json({ windows, ...(lecture.mode === "untimed" ? { weakMatches: getWeakMatches(db, mergeRun!.id) } : {}) });
   });
 
   router.get("/:lectureId/merged-note", (req: Request, res: Response) => {

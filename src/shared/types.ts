@@ -162,6 +162,16 @@ export type AlignedWindow = {
   endMs?: number;
 };
 
+// A note block of untimed notes whose best similarity to its assigned window fell below the
+// weak-match threshold (or that the order-preserving alignment had to skip). Not judged in
+// any window; similarWindowIds are its three most similar windows, ignoring order.
+export type WeakMatch = {
+  blockId: string;
+  score: number;
+  windowId: string;
+  similarWindowIds: string[];
+};
+
 // Stored override entry (no blockIds — always recomputed from notes)
 export type WindowOverride = {
   id: string;

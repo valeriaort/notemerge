@@ -24,6 +24,7 @@ import type {
   SlideMarker,
   Subject,
   AlignedWindow,
+  WeakMatch,
   TranscriptRun,
   TranscriptRunState,
   User,
@@ -278,6 +279,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE sentences ADD COLUMN clock_end_time_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN alignment TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE merge_runs ADD COLUMN weak_matches TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
@@ -1088,6 +1090,22 @@ export function getAlignment(
     .get(mergeRunId) as { alignment: string | null } | undefined;
   if (!row || row.alignment === null) return null;
   return JSON.parse(row.alignment) as AlignedWindow[];
+}
+
+export function saveWeakMatches(
+  db: Database.Database,
+  mergeRunId: string,
+  weakMatches: WeakMatch[],
+): void {
+  db.prepare("UPDATE merge_runs SET weak_matches = ? WHERE id = ?")
+    .run(JSON.stringify(weakMatches), mergeRunId);
+}
+
+export function getWeakMatches(db: Database.Database, mergeRunId: string): WeakMatch[] {
+  const row = db
+    .prepare("SELECT weak_matches FROM merge_runs WHERE id = ?")
+    .get(mergeRunId) as { weak_matches: string | null } | undefined;
+  return row?.weak_matches ? (JSON.parse(row.weak_matches) as WeakMatch[]) : [];
 }
 
 export function getMergeRunByLectureId(

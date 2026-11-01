@@ -14,6 +14,13 @@
     "noiseMinProbability": 0.95
   },
   "contextMarginMs": 60000,
+  "contentAlignment": {
+    "spanMs": 30000,
+    "audioWindowMs": 240000,
+    "shortItemChars": 15,
+    "weakMatchThreshold": 0.5,
+    "skipFloor": 0.3
+  },
   "mergeWindowConcurrency": 4,
   "mergeWindowRetryAttempts": 3,
   "mergeWindowRetryBaseMs": 100,
