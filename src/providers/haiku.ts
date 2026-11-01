@@ -8,7 +8,7 @@ based on an edit list produced by a coverage and conflict classifier.
 
 Rules:
 - Every edit list entry must be answered by exactly one operation.
-- All added or rewritten note text must be in Spanish, in the student's terse register, \
+- All added or rewritten note text must be in Spanish, in the register of the sealed notes, \
   using any abbreviations shown in the existing note blocks.
 - For "missing" entries: add the missing fact as a new block. Use add_after a nearby related \
   note block when one exists in the same window; otherwise use add_at_window.

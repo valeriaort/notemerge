@@ -11,6 +11,7 @@ import {
   updateLectureNotes,
   ensureDefaultUser,
 } from "../db.js";
+import { strings } from "../../shared/strings.js";
 
 const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
 
@@ -18,12 +19,17 @@ export function lectureRoutes(db: Database.Database, dataDir: string): Router {
   const router = Router();
 
   router.post("/", (req: Request, res: Response) => {
+    const { mode } = (req.body ?? {}) as { mode?: unknown };
+    if (mode !== undefined && mode !== "live" && mode !== "untimed") {
+      res.status(400).json({ error: strings.lectureMode.invalid });
+      return;
+    }
     const user = ensureDefaultUser(db);
     const id = uuidv4();
     const lectureDir = path.join(dataDir, id);
     mkdirSync(lectureDir, { recursive: true });
 
-    const lecture = createLecture(db, id, user.id, lectureDir);
+    const lecture = createLecture(db, id, user.id, lectureDir, mode ?? "live");
     res.status(201).json(lecture);
   });
 
@@ -51,6 +57,10 @@ export function lectureRoutes(db: Database.Database, dataDir: string): Router {
     const existing = getLecture(db, req.params["id"]!);
     if (!existing) {
       res.status(404).json({ error: "Lecture not found" });
+      return;
+    }
+    if (existing.mode === "untimed") {
+      res.status(409).json({ error: strings.lectureMode.untimedNoEditor });
       return;
     }
     if (SEALED_STAGES.has(existing.stage)) {

@@ -36,6 +36,7 @@ export type DbRow = {
   id: string;
   user_id: string;
   stage: string;
+  mode: string;
   subject_id: string | null;
   data_dir: string;
   notes_data: string;
@@ -71,6 +72,7 @@ function rowToLecture(row: DbRow): Lecture {
   return {
     id: row.id,
     userId: row.user_id,
+    mode: (row.mode ?? "live") as Lecture["mode"],
     stage: row.stage as Lecture["stage"],
     subjectId: row.subject_id,
     dataDir: row.data_dir,
@@ -276,6 +278,7 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE sentences ADD COLUMN clock_end_time_ms INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN transcription_model_override TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN alignment TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE lectures ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
 
   return db;
@@ -301,12 +304,13 @@ export function createLecture(
   id: string,
   userId: string,
   dataDir: string,
+  mode: Lecture["mode"] = "live",
 ): Lecture {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO lectures (id, user_id, stage, subject_id, data_dir, notes_data, created_at, updated_at)
-     VALUES (?, ?, 'writing', NULL, ?, '{"blocks":[],"meta":{}}', ?, ?)`,
-  ).run(id, userId, dataDir, now, now);
+    `INSERT INTO lectures (id, user_id, stage, mode, subject_id, data_dir, notes_data, created_at, updated_at)
+     VALUES (?, ?, 'writing', ?, NULL, ?, '{"blocks":[],"meta":{}}', ?, ?)`,
+  ).run(id, userId, mode, dataDir, now, now);
 
   return rowToLecture(
     db.prepare("SELECT * FROM lectures WHERE id = ?").get(id) as DbRow,

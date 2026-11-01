@@ -14,8 +14,11 @@ export type LectureStage =
   | "review"
   | "exported";
 
+export type LectureMode = "live" | "untimed";
+
 export interface Lecture {
   id: string;
+  mode: LectureMode;
   userId: string;
   stage: LectureStage;
   subjectId: string | null;

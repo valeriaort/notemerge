@@ -47,7 +47,10 @@ const REPEAT_THRESHOLD = 0.5;
 const MIN_ITEMS_FOR_TEXT = 1;
 
 // Minimum fraction of pages with text before we reject as scanned
-const SCAN_THRESHOLD = 0.3;
+export const SCAN_THRESHOLD = 0.3;
+
+export const SCANNED_PDF_ERROR =
+  "This PDF appears to contain scanned images with no extractable text. OCR is not supported.";
 
 // Max y-delta to group items into the same line
 const LINE_GROUP_DELTA = 2;
@@ -58,18 +61,18 @@ const TERMINAL_PUNCT_RE = /[.!?:;]$/;
 // Bare page-number line: optional whitespace, one or more digits, optional whitespace
 const PAGE_NUMBER_RE = /^\s*\d+\s*$/;
 
-function isTextItem(item: TextItem | TextMarkedContent): item is TextItem {
+export function isTextItem(item: TextItem | TextMarkedContent): item is TextItem {
   return "str" in item;
 }
 
-type PageLine = {
+export type PageLine = {
   text: string;
   maxHeight: number;
   y: number;
   x: number;
 };
 
-async function getPdfjs() {
+export async function getPdfjs() {
   const require = createRequire(import.meta.url);
   const workerPath = require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const pdfjsDir = path.dirname(require.resolve("pdfjs-dist/package.json"));
@@ -81,7 +84,7 @@ async function getPdfjs() {
   return { pdfjs, standardFontsDir };
 }
 
-function groupIntoLines(items: TextItem[]): PageLine[] {
+export function groupIntoLines(items: TextItem[]): PageLine[] {
   // Filter empty strings
   const valid = items.filter((it) => it.str.trim().length > 0);
 
@@ -221,7 +224,7 @@ export async function extractSlidesFromPdf(buffer: Buffer): Promise<ExtractionRe
   if (numPages > 1 && pagesWithText / numPages < SCAN_THRESHOLD) {
     return {
       ok: false,
-      error: "This PDF appears to contain scanned images with no extractable text. OCR is not supported.",
+      error: SCANNED_PDF_ERROR,
     };
   }
 
