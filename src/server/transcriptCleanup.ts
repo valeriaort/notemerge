@@ -7,6 +7,7 @@ import {
   listSentencesByChunk,
   listSentencesByLecture,
   updateSentence,
+  setSentenceStitchBackup,
   getAudioChunk,
   getAudioFile,
 } from "./db.js";
@@ -29,10 +30,15 @@ function startsLowercase(text: string): boolean {
   return ch === ch.toLowerCase() && ch !== ch.toUpperCase();
 }
 
+// With onlyChunkIds, only boundaries touching one of those chunks are considered (pass 2 of
+// untimed transcription); the other boundaries were stitched already and must not stitch twice.
+// Returns the sentences that absorbed the start of the next chunk.
 export function stitchAcrossChunkBoundaries(
   db: Database.Database,
   lectureId: string,
-): void {
+  onlyChunkIds?: Set<string>,
+): string[] {
+  const stitched: string[] = [];
   const audioFiles = listAudioFiles(db, lectureId);
 
   for (const audioFile of audioFiles) {
@@ -41,6 +47,7 @@ export function stitchAcrossChunkBoundaries(
     for (let i = 0; i < chunks.length - 1; i++) {
       const currChunk = chunks[i]!;
       const nextChunk = chunks[i + 1]!;
+      if (onlyChunkIds && !onlyChunkIds.has(currChunk.id) && !onlyChunkIds.has(nextChunk.id)) continue;
 
       const currSentences = listSentencesByChunk(db, currChunk.id).filter((s) => s.status === "active");
       const nextSentences = listSentencesByChunk(db, nextChunk.id).filter((s) => s.status === "active");
@@ -52,6 +59,14 @@ export function stitchAcrossChunkBoundaries(
 
       if (!TERMINAL_PUNCT_RE.test(lastSent.text) && startsLowercase(firstSent.text)) {
         const stitchedText = (lastSent.text + " " + firstSent.text).replace(/\s+/g, " ").trim();
+        setSentenceStitchBackup(db, lastSent.id, {
+          text: lastSent.text,
+          avgLogprob: lastSent.avgLogprob,
+          noSpeechProb: lastSent.noSpeechProb,
+          compressionRatio: lastSent.compressionRatio,
+          audioEndOffsetMs: lastSent.audioEndOffsetMs,
+          clockEndTimeMs: lastSent.clockEndTimeMs,
+        });
         updateSentence(db, lastSent.id, {
           text: stitchedText,
           avgLogprob: Math.min(lastSent.avgLogprob, firstSent.avgLogprob),
@@ -64,9 +79,11 @@ export function stitchAcrossChunkBoundaries(
           status: "retired",
           stitchedInto: lastSent.id,
         });
+        stitched.push(lastSent.id);
       }
     }
   }
+  return stitched;
 }
 
 // ── Filler removal ────────────────────────────────────────────────────────────
@@ -180,6 +197,14 @@ function hasMedicalTermAbsentFromGlossary(
 
 // ── Flagging ──────────────────────────────────────────────────────────────────
 
+// Untimed notes have no per-chunk notes in a time range, so the caller supplies each chunk's
+// known terms (lecture glossary in pass 1, window mini glossary in pass 2). sentenceIds limits
+// flagging to a subset of the lecture's sentences.
+export type FlagScope = {
+  sentenceIds?: Set<string>;
+  knownTermsForChunk?: (chunkId: string) => Set<string> | undefined;
+};
+
 export function flagSentences(
   db: Database.Database,
   lectureId: string,
@@ -187,15 +212,21 @@ export function flagSentences(
   abbrevPairs: AbbreviationPair[],
   subjectGlossary: string[],
   thresholds: Config["thresholds"],
+  scope: FlagScope = {},
 ): void {
-  const sentences = listSentencesByLecture(db, lectureId).filter((s) => s.status === "active");
+  const sentences = listSentencesByLecture(db, lectureId).filter(
+    (s) => s.status === "active" && (!scope.sentenceIds || scope.sentenceIds.has(s.id)),
+  );
 
   for (const sent of sentences) {
     const chunk = getAudioChunk(db, sent.chunkId);
     const audioFile = chunk ? getAudioFile(db, chunk.audioFileId) : undefined;
 
     let knownTerms: Set<string> = new Set();
-    if (chunk && audioFile) {
+    const supplied = scope.knownTermsForChunk?.(sent.chunkId);
+    if (supplied) {
+      knownTerms = supplied;
+    } else if (chunk && audioFile) {
       const clockStart = audioFile.recordingStartMs + chunk.startOffsetMs;
       const clockEnd = clockStart + chunk.durationMs;
       knownTerms = buildKnownTermsForChunk(notesDoc, clockStart, clockEnd, abbrevPairs, subjectGlossary);
@@ -225,8 +256,9 @@ export function postProcessTranscript(
   abbrevPairs: AbbreviationPair[],
   subjectGlossary: string[],
   thresholds: Config["thresholds"],
+  scope: FlagScope = {},
 ): void {
   stitchAcrossChunkBoundaries(db, lectureId);
   removeFillerSentences(db, lectureId);
-  flagSentences(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, thresholds);
+  flagSentences(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, thresholds, scope);
 }

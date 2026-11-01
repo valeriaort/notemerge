@@ -67,9 +67,14 @@ export interface TranscriptRun {
   model: string;
   failedChunkIds: string[];
   createdAt: number;
+  // Untimed notes: 1 = first pass (lecture glossary) in progress, 2 = first pass cleaned up and
+  // flagged chunks are being re-transcribed. Always 1 for live notes.
+  pass: 1 | 2;
 }
 
 export type ChunkStatus = "pending" | "done" | "failed";
+// Untimed notes, pass 2: set only on chunks selected for re-transcription
+export type Pass2Status = "pending" | "done" | "failed";
 export type SentenceStatus = "active" | "retired";
 export type SentenceFlagState = "unflagged" | "flagged_unhandled" | "corrected" | "advanced";
 
@@ -202,6 +207,7 @@ export type AudioChunk = {
   attempts: number;
   lastError: string | null;
   rawResponse: string | null;
+  pass2Status?: Pass2Status | null;
 };
 
 export type MergeRunState = "pending" | "running" | "paused" | "haiku" | "done";

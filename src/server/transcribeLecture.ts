@@ -1,4 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
+import { existsSync, readFileSync } from "fs";
+import path from "path";
 import type Database from "better-sqlite3";
 import type { Config } from "./config.js";
 import type { Providers } from "../providers/interfaces.js";
@@ -15,6 +17,7 @@ import {
   getLecture,
   listAudioFiles,
   listAudioChunks,
+  listSentencesByLecture,
   listAbbreviationPairs,
   getSubject,
   updateLectureStage,
@@ -27,7 +30,21 @@ import {
   countSentencesForAudioFile,
   getAudioChunk,
   getLectureTranscriptionModelOverride,
+  setTranscriptRunPass,
+  setChunkPass2Status,
+  setChunkPass2Result,
+  listFlaggedUnhandledSentencesByLecture,
 } from "./db.js";
+import { getAudioBounds } from "./lectureWindows.js";
+import { contentAlign } from "./contentAlignment.js";
+import type { ExtractedSlide } from "./pdfExtraction.js";
+import {
+  buildLectureGlossary,
+  buildChunkGlossary,
+  topLevelBlockTexts,
+  retireChunkSentences,
+  finishPass2,
+} from "./untimedTranscription.js";
 import { postProcessTranscript } from "./transcriptCleanup.js";
 import { expandAbbreviations } from "../shared/abbreviationExpansion.js";
 import { retainTerms } from "../shared/termRetention.js";
@@ -218,6 +235,40 @@ async function transcribeWithRetry(
   throw lastErr;
 }
 
+// Split a chunk's transcription into sentences and store them, numbering from firstNumber.
+// Returns the next free number. IDs are never reused: retired sentences keep theirs.
+function storeChunkSentences(
+  db: Database.Database,
+  audioFile: AudioFile,
+  chunk: AudioChunk,
+  rawResult: import("../shared/types.js").TranscriptionResult,
+  firstNumber: number,
+): number {
+  let sentenceCounter = firstNumber;
+  for (const rs of splitSegmentsIntoSentences(rawResult.segments)) {
+    const sentence: Sentence = {
+      id: makeSentenceId(audioFile.fileIndex, sentenceCounter++),
+      chunkId: chunk.id,
+      audioStartOffsetMs: rs.audioStartOffsetMs,
+      audioEndOffsetMs: rs.audioEndOffsetMs,
+      clockStartTimeMs: audioFile.recordingStartMs + rs.audioStartOffsetMs,
+      clockEndTimeMs: audioFile.recordingStartMs + rs.audioEndOffsetMs,
+      textRaw: rs.text,
+      text: rs.text,
+      avgLogprob: rs.avgLogprob,
+      noSpeechProb: rs.noSpeechProb,
+      compressionRatio: rs.compressionRatio,
+      status: "active",
+      stitchedInto: null,
+      flagState: "unflagged",
+      flagReasons: [],
+      correctedText: null,
+    };
+    createSentence(db, sentence);
+  }
+  return sentenceCounter;
+}
+
 // ── Main transcription driver ─────────────────────────────────────────────────
 
 export async function transcribeLecture(
@@ -256,7 +307,19 @@ export async function transcribeLecture(
   const audioFiles = listAudioFiles(db, lectureId);
   const failedChunkIds: string[] = [];
 
-  for (const audioFile of audioFiles) {
+  const untimed = lecture.mode === "untimed";
+  let slides: ExtractedSlide[] = [];
+  const slidesPath = path.join(lecture.dataDir, "slides.json");
+  if (untimed && existsSync(slidesPath)) {
+    slides = JSON.parse(readFileSync(slidesPath, "utf-8")) as ExtractedSlide[];
+  }
+  // Untimed notes, pass 1: one lecture glossary prompts every chunk
+  const lectureGlossary = untimed
+    ? buildLectureGlossary(slides, notesDoc, abbrevPairs, subjectGlossary)
+    : undefined;
+  const inPass1 = transcriptRun.pass === 1;
+
+  for (const audioFile of inPass1 ? audioFiles : []) {
     setAudioFileTranscriptionModel(db, audioFile.id, model);
     const chunks = listAudioChunks(db, audioFile.id);
 
@@ -271,14 +334,9 @@ export async function transcribeLecture(
       const chunkClockStartMs = audioFile.recordingStartMs + chunk.startOffsetMs;
       const chunkClockEndMs = chunkClockStartMs + chunk.durationMs;
 
-      const prompt = buildChunkPrompt(
-        notesDoc,
-        chunkClockStartMs,
-        chunkClockEndMs,
-        abbrevPairs,
-        subjectGlossary,
-        224,
-      );
+      const prompt =
+        lectureGlossary?.prompt ??
+        buildChunkPrompt(notesDoc, chunkClockStartMs, chunkClockEndMs, abbrevPairs, subjectGlossary, 224);
 
       let rawResult: import("../shared/types.js").TranscriptionResult;
       try {
@@ -298,29 +356,7 @@ export async function transcribeLecture(
       const rawResponse = JSON.stringify(rawResult);
       updateAudioChunkTranscription(db, chunk.id, "done", rawResponse, null);
 
-      const rawSentences = splitSegmentsIntoSentences(rawResult.segments);
-      for (const rs of rawSentences) {
-        const sentenceId = makeSentenceId(audioFile.fileIndex, sentenceCounter++);
-        const sentence: Sentence = {
-          id: sentenceId,
-          chunkId: chunk.id,
-          audioStartOffsetMs: rs.audioStartOffsetMs,
-          audioEndOffsetMs: rs.audioEndOffsetMs,
-          clockStartTimeMs: audioFile.recordingStartMs + rs.audioStartOffsetMs,
-          clockEndTimeMs: audioFile.recordingStartMs + rs.audioEndOffsetMs,
-          textRaw: rs.text,
-          text: rs.text,
-          avgLogprob: rs.avgLogprob,
-          noSpeechProb: rs.noSpeechProb,
-          compressionRatio: rs.compressionRatio,
-          status: "active",
-          stitchedInto: null,
-          flagState: "unflagged",
-          flagReasons: [],
-          correctedText: null,
-        };
-        createSentence(db, sentence);
-      }
+      sentenceCounter = storeChunkSentences(db, audioFile, chunk, rawResult, sentenceCounter);
     }
   }
 
@@ -337,15 +373,94 @@ export async function transcribeLecture(
 
   if (allFailed.length > 0) {
     updateTranscriptRunState(db, transcriptRun.id, "paused", allFailed);
-  } else {
+    return { transcriptRun: getTranscriptRunByLectureId(db, lectureId)! };
+  }
+
+  if (!untimed) {
     postProcessTranscript(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, cfg.thresholds);
     updateTranscriptRunState(db, transcriptRun.id, "done");
     updateLectureStage(db, lectureId, "transcript-check");
+    return { transcriptRun: getTranscriptRunByLectureId(db, lectureId)! };
   }
 
-  return {
-    transcriptRun: getTranscriptRunByLectureId(db, lectureId)!,
-  };
+  // Pass 1 is complete: clean it up once, select the chunks to re-transcribe, and record that
+  // the run is now in pass 2 so a restart never repeats pass 1.
+  if (inPass1) {
+    postProcessTranscript(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, cfg.thresholds, {
+      knownTermsForChunk: () => lectureGlossary!.known,
+    });
+    const flaggedChunks = new Set(listFlaggedUnhandledSentencesByLecture(db, lectureId).map((s) => s.chunkId));
+    for (const { chunk } of getChunksForLecture(db, lectureId)) {
+      if (flaggedChunks.has(chunk.id)) setChunkPass2Status(db, chunk.id, "pending");
+    }
+    setTranscriptRunPass(db, transcriptRun.id, 2);
+  }
+
+  const selected = getChunksForLecture(db, lectureId).filter(({ chunk }) => getAudioChunk(db, chunk.id)?.pass2Status);
+  if (selected.length > 0) {
+    // Provisional alignment: in memory only, never persisted or returned
+    const { windows } = await contentAlign({
+      slides,
+      sentences: listSentencesByLecture(db, lectureId).filter((s) => s.status === "active"),
+      notesData: notesDoc,
+      abbreviationPairs: abbrevPairs,
+      audioBounds: getAudioBounds(db, lectureId),
+      embeddings: providers.embeddings,
+      options: cfg.contentAlignment,
+    });
+    const blockTexts = topLevelBlockTexts(notesDoc);
+    const glossaries = new Map<string, ReturnType<typeof buildChunkGlossary>>();
+    const glossaryFor = (audioFile: AudioFile, chunk: AudioChunk) => {
+      let g = glossaries.get(chunk.id);
+      if (!g) {
+        const startMs = audioFile.recordingStartMs + chunk.startOffsetMs;
+        g = buildChunkGlossary(startMs, startMs + chunk.durationMs, windows, blockTexts, abbrevPairs, subjectGlossary);
+        glossaries.set(chunk.id, g);
+      }
+      return g;
+    };
+
+    const failedPass2: string[] = [];
+    for (const { audioFile, chunk } of selected) {
+      if (getAudioChunk(db, chunk.id)?.pass2Status === "done") continue;
+      try {
+        const rawResult = await transcribeWithRetry(
+          providers.speechToText,
+          chunk.filePath,
+          glossaryFor(audioFile, chunk).prompt,
+          baseDelayMs,
+        );
+        retireChunkSentences(db, chunk.id);
+        storeChunkSentences(db, audioFile, chunk, rawResult, countSentencesForAudioFile(db, audioFile.id) + 1);
+        setChunkPass2Result(db, chunk.id, JSON.stringify(rawResult));
+      } catch (err) {
+        setChunkPass2Status(db, chunk.id, "failed", err instanceof Error ? err.message : String(err));
+        failedPass2.push(chunk.id);
+      }
+    }
+    if (failedPass2.length > 0) {
+      updateTranscriptRunState(db, transcriptRun.id, "paused", failedPass2);
+      return { transcriptRun: getTranscriptRunByLectureId(db, lectureId)! };
+    }
+
+    finishPass2(
+      db,
+      lectureId,
+      new Set(selected.map(({ chunk }) => chunk.id)),
+      notesDoc,
+      abbrevPairs,
+      subjectGlossary,
+      cfg.thresholds,
+      (chunkId) => {
+        const entry = selected.find(({ chunk }) => chunk.id === chunkId);
+        return entry ? glossaryFor(entry.audioFile, entry.chunk).known : lectureGlossary!.known;
+      },
+    );
+  }
+
+  updateTranscriptRunState(db, transcriptRun.id, "done");
+  updateLectureStage(db, lectureId, "transcript-check");
+  return { transcriptRun: getTranscriptRunByLectureId(db, lectureId)! };
 }
 
 export function getChunksForLecture(

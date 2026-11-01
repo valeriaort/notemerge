@@ -52,7 +52,7 @@ function sentenceText(s: Sentence): string {
   return s.correctedText ?? s.text;
 }
 
-function blockText(block: unknown): string {
+export function blockText(block: unknown): string {
   const b = block as { content?: unknown; children?: unknown[] };
   const parts: string[] = [];
   if (Array.isArray(b.content)) {

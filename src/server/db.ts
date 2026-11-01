@@ -26,6 +26,7 @@ import type {
   AlignedWindow,
   WeakMatch,
   TranscriptRun,
+  Pass2Status,
   TranscriptRunState,
   User,
   WindowOverride,
@@ -282,6 +283,9 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE merge_runs ADD COLUMN weak_matches TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE lectures ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE merged_blocks ADD COLUMN played INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE transcript_runs ADD COLUMN pass INTEGER NOT NULL DEFAULT 1"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE audio_chunks ADD COLUMN pass2_status TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE sentences ADD COLUMN stitch_backup TEXT"); } catch { /* already exists */ }
 
   return db;
 }
@@ -659,6 +663,7 @@ type AudioChunkRow = {
   attempts: number;
   last_error: string | null;
   raw_response: string | null;
+  pass2_status?: string | null;
 };
 
 function rowToAudioChunk(row: AudioChunkRow): AudioChunk {
@@ -673,7 +678,24 @@ function rowToAudioChunk(row: AudioChunkRow): AudioChunk {
     attempts: row.attempts ?? 0,
     lastError: row.last_error ?? null,
     rawResponse: row.raw_response ?? null,
+    pass2Status: (row.pass2_status ?? null) as Pass2Status | null,
   };
+}
+
+export function setChunkPass2Status(
+  db: Database.Database,
+  chunkId: string,
+  status: Pass2Status | null,
+  lastError: string | null = null,
+): void {
+  db.prepare("UPDATE audio_chunks SET pass2_status = ?, last_error = ? WHERE id = ?").run(status, lastError, chunkId);
+}
+
+// A pass-2 chunk keeps its pass-1 status and raw response until its new transcription arrives.
+export function setChunkPass2Result(db: Database.Database, chunkId: string, rawResponse: string): void {
+  db.prepare(
+    "UPDATE audio_chunks SET pass2_status = 'done', attempts = attempts + 1, raw_response = ?, last_error = NULL WHERE id = ?",
+  ).run(rawResponse, chunkId);
 }
 
 export function createAudioChunk(
@@ -731,6 +753,7 @@ type TranscriptRunRow = {
   model: string;
   failed_chunk_ids: string;
   created_at: number;
+  pass?: number;
 };
 
 function rowToTranscriptRun(row: TranscriptRunRow): TranscriptRun {
@@ -741,7 +764,12 @@ function rowToTranscriptRun(row: TranscriptRunRow): TranscriptRun {
     model: row.model,
     failedChunkIds: JSON.parse(row.failed_chunk_ids) as string[],
     createdAt: row.created_at,
+    pass: row.pass === 2 ? 2 : 1,
   };
+}
+
+export function setTranscriptRunPass(db: Database.Database, id: string, pass: 1 | 2): void {
+  db.prepare("UPDATE transcript_runs SET pass = ? WHERE id = ?").run(pass, id);
 }
 
 export function createTranscriptRun(
@@ -1001,6 +1029,32 @@ export function listSentencesByLecture(db: Database.Database, lectureId: string)
   ).map(rowToSentence);
 }
 
+export type StitchBackup = Pick<
+  Sentence,
+  "text" | "avgLogprob" | "noSpeechProb" | "compressionRatio" | "audioEndOffsetMs" | "clockEndTimeMs"
+>;
+
+// The sentence's fields as they were before it absorbed the start of the next chunk, so pass 2
+// can undo the stitch when that next chunk is re-transcribed.
+export function setSentenceStitchBackup(db: Database.Database, id: string, backup: StitchBackup | null): void {
+  db.prepare("UPDATE sentences SET stitch_backup = ? WHERE id = ?").run(backup ? JSON.stringify(backup) : null, id);
+}
+
+export function getSentenceStitchBackup(db: Database.Database, id: string): StitchBackup | null {
+  const row = db.prepare("SELECT stitch_backup FROM sentences WHERE id = ?").get(id) as
+    | { stitch_backup: string | null }
+    | undefined;
+  return row?.stitch_backup ? (JSON.parse(row.stitch_backup) as StitchBackup) : null;
+}
+
+export function listSentencesStitchedInto(db: Database.Database, ids: string[]): Sentence[] {
+  if (ids.length === 0) return [];
+  const marks = ids.map(() => "?").join(",");
+  return (
+    db.prepare(`SELECT * FROM sentences WHERE stitched_into IN (${marks})`).all(...ids) as SentenceRow[]
+  ).map(rowToSentence);
+}
+
 export function countSentencesForAudioFile(db: Database.Database, audioFileId: string): number {
   const row = db
     .prepare(
@@ -1024,7 +1078,7 @@ export function discardTranscript(db: Database.Database, lectureId: string): voi
 
   // Reset chunk status
   db.prepare(
-    `UPDATE audio_chunks SET status = 'pending', attempts = 0, last_error = NULL, raw_response = NULL
+    `UPDATE audio_chunks SET status = 'pending', attempts = 0, last_error = NULL, raw_response = NULL, pass2_status = NULL
      WHERE audio_file_id IN (SELECT id FROM audio_files WHERE lecture_id = ?)`,
   ).run(lectureId);
 
@@ -1584,7 +1638,7 @@ export function listFailedChunksWithDetails(
       `SELECT ac.id, ac.chunk_index, af.file_index, ac.last_error
        FROM audio_chunks ac
        JOIN audio_files af ON ac.audio_file_id = af.id
-       WHERE af.lecture_id = ? AND ac.status = 'failed'
+       WHERE af.lecture_id = ? AND (ac.status = 'failed' OR ac.pass2_status = 'failed')
        ORDER BY af.file_index ASC, ac.chunk_index ASC`,
     )
     .all(lectureId) as Row[];
