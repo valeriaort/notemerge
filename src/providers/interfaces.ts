@@ -49,6 +49,18 @@ export class ClassifierRetryableError extends Error {
   }
 }
 
+export class EmbeddingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EmbeddingError";
+  }
+}
+
+export interface EmbeddingProvider {
+  // One vector per text, in order. Failures throw EmbeddingError; no retry.
+  embed(texts: string[]): Promise<number[][]>;
+}
+
 export interface SpeechToTextProvider {
   transcribeChunk(chunkPath: string, prompt: string): Promise<TranscriptionResult>;
 }
@@ -113,4 +125,5 @@ export interface Providers {
   classifier: ClassifierProvider;
   writingModel: WritingModelProvider;
   notion: NotionProvider;
+  embeddings: EmbeddingProvider;
 }
