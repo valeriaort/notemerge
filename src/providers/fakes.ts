@@ -31,6 +31,7 @@ export class FakeSpeechToText implements SpeechToTextProvider {
 
 export class ScriptedSpeechToText implements SpeechToTextProvider {
   private segmentsByPath: Map<string, WhisperSegment[]> = new Map();
+  private sequenceByPath: Map<string, WhisperSegment[][]> = new Map();
   private defaultSegments: WhisperSegment[] = [];
   public capturedPrompts: Array<{ chunkPath: string; prompt: string }> = [];
 
@@ -44,6 +45,11 @@ export class ScriptedSpeechToText implements SpeechToTextProvider {
 
   setSegments(chunkPath: string, segments: WhisperSegment[]): void {
     this.segmentsByPath.set(chunkPath, segments);
+  }
+
+  /** Successive calls for a path return successive entries; the last one repeats. */
+  setSegmentsSequence(chunkPath: string, sequence: WhisperSegment[][]): void {
+    this.sequenceByPath.set(chunkPath, sequence);
   }
 
   setDefaultSegments(segments: WhisperSegment[]): void {
@@ -78,6 +84,10 @@ export class ScriptedSpeechToText implements SpeechToTextProvider {
     this.callsMade++;
     if (this.callsMade <= this.failFirstNCalls) {
       throw new TranscriptionHttpError(this.failStatusCode, `HTTP ${this.failStatusCode}`);
+    }
+    const sequence = this.sequenceByPath.get(chunkPath);
+    if (sequence && sequence.length > 0) {
+      return { segments: sequence.length > 1 ? sequence.shift()! : sequence[0]! };
     }
     const segments = this.segmentsByPath.get(chunkPath) ?? this.defaultSegments;
     return { segments };

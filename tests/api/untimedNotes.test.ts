@@ -272,9 +272,11 @@ describe("untimed audio", () => {
 
     const t = await fetch(`${server.url}/api/lectures/${lecture.id}/transcribe`, { method: "POST" });
     expect(t.status).toBeLessThan(300);
-    const { sentences } = await json<{ sentences: Sentence[] }>(
+    const all = await json<{ sentences: Sentence[] }>(
       await fetch(`${server.url}/api/lectures/${lecture.id}/sentences`),
     );
+    // The sentence is flagged in pass 1 and re-transcribed in pass 2, which retires the original
+    const sentences = all.sentences.filter((s) => s.status === "active");
     expect(sentences).toHaveLength(1);
     expect(sentences[0]!.clockStartTimeMs).toBe(1000);
     expect(sentences[0]!.clockEndTimeMs).toBe(3000);
