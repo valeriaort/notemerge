@@ -1,7 +1,7 @@
 # Audio upload fails after the first lecture with audio
 
 **Date:** 2026-11-03
-**Status:** Diagnosed, fix tracked in #60, #61, #62
+**Status:** #60 and #61 fixed; #62 open
 **Severity:** High. Blocks every new lecture with audio once any earlier lecture has audio.
 
 ## Symptoms
@@ -65,11 +65,7 @@ It creates two lectures in the same database and uploads audio to both. It fails
 
 ## Recovering the stuck lecture
 
-After #61, upload the files to lecture `a50f99a6-…` again. Its orphan `audio_files` row will be replaced. Until then, either start a new lecture once #60 is in, or delete the orphan row by hand:
-
-```sql
-DELETE FROM audio_files WHERE lecture_id = 'a50f99a6-15e6-4c3e-8e22-3a4debc57439';
-```
+Upload the files to lecture `a50f99a6-…` again. Since #61 the upload replaces the lecture's leftover `audio_files` and `audio_chunks` rows (and its `chunks_A##` directories) inside one transaction. No manual database cleanup is needed.
 
 ## What would have prevented it
 

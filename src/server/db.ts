@@ -647,6 +647,14 @@ export function createAudioFile(
   );
 }
 
+// Remove every audio file and chunk row of a lecture (chunks first: foreign keys don't cascade).
+export function deleteLectureAudio(db: Database.Database, lectureId: string): void {
+  db.prepare(
+    "DELETE FROM audio_chunks WHERE audio_file_id IN (SELECT id FROM audio_files WHERE lecture_id = ?)",
+  ).run(lectureId);
+  db.prepare("DELETE FROM audio_files WHERE lecture_id = ?").run(lectureId);
+}
+
 export function listAudioFiles(db: Database.Database, lectureId: string): AudioFile[] {
   return (
     db
