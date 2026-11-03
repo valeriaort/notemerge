@@ -15,13 +15,14 @@ import {
   createAudioChunk,
   listAudioFiles,
   updateLectureNotes,
+  deleteLectureAudio,
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
 import { extractSlidesFromPdf } from "../pdfExtraction.js";
 import { chunkAudioFile } from "../chunking.js";
 import { convertNotesFile } from "../notesConversion.js";
 import { config } from "../config.js";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, rmSync } from "fs";
 
 // ~2 hours maximum total audio duration
 const MAX_TOTAL_DURATION_MS = 2.5 * 60 * 60 * 1000;
@@ -257,6 +258,8 @@ export function audioSourcesRoutes(
 
         // Chunk the audio file (ffmpeg runs for real)
         const chunksDir = path.join(lectureDir, `chunks_A${String(index).padStart(2, "0")}`);
+        // Drop chunk files left by an earlier failed attempt so only this upload's chunks remain.
+        rmSync(chunksDir, { recursive: true, force: true });
         const result = await chunkAudioFile(audioFilePath, chunksDir, index, chunkTargetMs);
         if (!result.ok) {
           res.status(400).json({ error: strings.audio.chunkingFailed(result.error) });
@@ -284,38 +287,50 @@ export function audioSourcesRoutes(
         return;
       }
 
-      // Phase 2: persist audio files and chunks to DB
-      for (const p of processed) {
-        const audioFile = createAudioFile(
-          db,
-          p.audioFileId,
-          lecture.id,
-          p.index,
-          p.filePath,
-          p.recordingStartMs,
-          p.durationMs,
-        );
-        for (let ci = 0; ci < p.chunks.length; ci++) {
-          const chunk = p.chunks[ci]!;
-          // Chunk names (A01-C001) repeat in every lecture; audio_chunks.id is unique database-wide.
-          createAudioChunk(
+      // Phase 2: persist audio files, chunks, converted notes and the seal in one transaction,
+      // so a failure midway leaves no half-saved lecture.
+      const persist = db.transaction(() => {
+        // A not-yet-sealed lecture may hold rows from an earlier failed upload: replace them.
+        if (!SEALED_STAGES.has(lecture.stage)) deleteLectureAudio(db, lecture.id);
+
+        for (const p of processed) {
+          const audioFile = createAudioFile(
             db,
-            `${p.audioFileId}-${chunk.name}`,
-            audioFile.id,
-            ci + 1,
-            chunk.filePath,
-            chunk.startOffsetMs,
-            chunk.durationMs,
+            p.audioFileId,
+            lecture.id,
+            p.index,
+            p.filePath,
+            p.recordingStartMs,
+            p.durationMs,
           );
+          for (let ci = 0; ci < p.chunks.length; ci++) {
+            const chunk = p.chunks[ci]!;
+            // Chunk names (A01-C001) repeat in every lecture; audio_chunks.id is unique database-wide.
+            createAudioChunk(
+              db,
+              `${p.audioFileId}-${chunk.name}`,
+              audioFile.id,
+              ci + 1,
+              chunk.filePath,
+              chunk.startOffsetMs,
+              chunk.durationMs,
+            );
+          }
         }
-      }
 
-      if (convertedNotes !== null) updateLectureNotes(db, lecture.id, convertedNotes);
+        if (convertedNotes !== null) updateLectureNotes(db, lecture.id, convertedNotes);
 
-      // Seal the lecture
-      const sealed = sealLecture(db, lecture.id, subject.id, presentationPath);
-      if (!sealed) {
-        res.status(500).json({ error: "Failed to seal lecture" });
+        const sealedLecture = sealLecture(db, lecture.id, subject.id, presentationPath);
+        if (!sealedLecture) throw new Error(`Failed to seal lecture ${lecture.id}`);
+        return sealedLecture;
+      });
+
+      let sealed;
+      try {
+        sealed = persist();
+      } catch (err) {
+        console.error("Saving sources upload failed:", err);
+        res.status(500).json({ error: strings.errors.uploadSaveFailed });
         return;
       }
 
