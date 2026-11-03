@@ -419,3 +419,18 @@ describe("windows for lectures with no presentation", () => {
     }
   });
 });
+
+describe("audio across multiple lectures", () => {
+  it("a second lecture can upload audio after another lecture already has chunks", async () => {
+    const subject = await createSubject("Multi");
+    const first = await createLecture();
+    const res1 = await uploadSources(first.id, { subjectId: subject.id, audio1: SHORT_AUDIO });
+    expect(res1.status).toBe(200);
+
+    const second = await createLecture();
+    const res2 = await uploadSources(second.id, { subjectId: subject.id, audio1: SHORT_AUDIO });
+    expect(res2.status).toBe(200);
+    const body = (await res2.json()) as { lecture: Lecture };
+    expect(body.lecture.stage).toBe("sealed");
+  });
+});
