@@ -51,6 +51,11 @@ export function createApp(
   app.use("/api/abbreviations", abbreviationRoutes(db));
   app.use("/api/notion", notionRoutes(db, _providers, cfg));
 
+  // Unknown API routes must 404, not fall through to the SPA's index.html
+  app.use("/api", (_req, res) => {
+    res.sendStatus(404);
+  });
+
   // Serve React client in production
   const clientDist = path.resolve(__dirname, "../../dist/client");
   if (existsSync(clientDist)) {
