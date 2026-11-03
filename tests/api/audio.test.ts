@@ -498,6 +498,21 @@ describe("failed upload and retry", () => {
     expect(counts.chunks).toBeGreaterThan(0);
   });
 
+  it("a sealed live lecture rejects a second Sources upload with 409 and keeps its audio and stage", async () => {
+    const subject = await createSubject("Sealed live");
+    const lecture = await createLecture();
+    const opts = { subjectId: subject.id, audio1: SHORT_AUDIO, audio1StartTime: 1_700_000_000_000 };
+    const first = await uploadSources(lecture.id, opts);
+    expect(first.status).toBe(200);
+    const before = lectureAudioCounts(lecture.id);
+
+    const second = await uploadSources(lecture.id, opts);
+    expect(second.status).toBe(409);
+    expect(lectureAudioCounts(lecture.id)).toEqual(before);
+    const after = (await (await fetch(`${server.url}/api/lectures/${lecture.id}`)).json()) as Lecture;
+    expect(after.stage).toBe("sealed");
+  });
+
   it("an orphan audio_files row left by an earlier failure is replaced on upload", async () => {
     const subject = await createSubject("Orphan");
     const lecture = await createLecture();
