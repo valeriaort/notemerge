@@ -245,7 +245,8 @@ export function openDb(dbPath: string) {
     );
 
     CREATE TABLE IF NOT EXISTS sentences (
-      id TEXT PRIMARY KEY,
+      lecture_id TEXT NOT NULL REFERENCES lectures(id),
+      id TEXT NOT NULL,
       chunk_id TEXT NOT NULL REFERENCES audio_chunks(id),
       audio_start_offset_ms INTEGER NOT NULL,
       audio_end_offset_ms INTEGER NOT NULL DEFAULT 0,
@@ -260,7 +261,8 @@ export function openDb(dbPath: string) {
       stitched_into TEXT,
       flag_state TEXT NOT NULL DEFAULT 'unflagged',
       flag_reasons TEXT NOT NULL DEFAULT '[]',
-      corrected_text TEXT
+      corrected_text TEXT,
+      PRIMARY KEY (lecture_id, id)
     );
   `);
 
@@ -289,8 +291,50 @@ export function openDb(dbPath: string) {
   try { db.exec("ALTER TABLE transcript_runs ADD COLUMN pass INTEGER NOT NULL DEFAULT 1"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE audio_chunks ADD COLUMN pass2_status TEXT"); } catch { /* already exists */ }
   try { db.exec("ALTER TABLE sentences ADD COLUMN stitch_backup TEXT"); } catch { /* already exists */ }
+  scopeSentencesToLecture(db);
 
   return db;
+}
+
+// Sentence IDs (A01-T0001) repeat in every lecture, so the key is (lecture_id, id). Databases
+// created before that have id alone as the primary key; SQLite can't change a key in place, so
+// the table is rebuilt once, filling lecture_id from the sentence's chunk and audio file.
+function scopeSentencesToLecture(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info(sentences)").all() as { name: string }[];
+  if (columns.some((c) => c.name === "lecture_id")) return;
+  const cols = columns.map((c) => c.name).join(", ");
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE sentences_new (
+        lecture_id TEXT NOT NULL REFERENCES lectures(id),
+        id TEXT NOT NULL,
+        chunk_id TEXT NOT NULL REFERENCES audio_chunks(id),
+        audio_start_offset_ms INTEGER NOT NULL,
+        audio_end_offset_ms INTEGER NOT NULL DEFAULT 0,
+        clock_start_time_ms INTEGER NOT NULL,
+        clock_end_time_ms INTEGER NOT NULL DEFAULT 0,
+        text_raw TEXT NOT NULL,
+        text TEXT NOT NULL,
+        avg_logprob REAL NOT NULL,
+        no_speech_prob REAL NOT NULL,
+        compression_ratio REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        stitched_into TEXT,
+        flag_state TEXT NOT NULL DEFAULT 'unflagged',
+        flag_reasons TEXT NOT NULL DEFAULT '[]',
+        corrected_text TEXT,
+        stitch_backup TEXT,
+        PRIMARY KEY (lecture_id, id)
+      );
+      INSERT INTO sentences_new (lecture_id, ${cols})
+        SELECT af.lecture_id, ${columns.map((c) => `s.${c.name}`).join(", ")}
+        FROM sentences s
+        JOIN audio_chunks ac ON s.chunk_id = ac.id
+        JOIN audio_files af ON ac.audio_file_id = af.id;
+      DROP TABLE sentences;
+      ALTER TABLE sentences_new RENAME TO sentences;
+    `);
+  })();
 }
 
 export function ensureDefaultUser(db: Database.Database): User {
@@ -873,11 +917,13 @@ export function createSentence(
   sentence: Sentence,
 ): Sentence {
   db.prepare(
-    `INSERT INTO sentences (id, chunk_id, audio_start_offset_ms, audio_end_offset_ms,
+    `INSERT INTO sentences (lecture_id, id, chunk_id, audio_start_offset_ms, audio_end_offset_ms,
        clock_start_time_ms, clock_end_time_ms, text_raw, text,
        avg_logprob, no_speech_prob, compression_ratio, status, stitched_into, flag_state, flag_reasons, corrected_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES ((SELECT af.lecture_id FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id WHERE ac.id = ?),
+       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    sentence.chunkId,
     sentence.id,
     sentence.chunkId,
     sentence.audioStartOffsetMs,
@@ -896,7 +942,10 @@ export function createSentence(
     sentence.correctedText,
   );
   return rowToSentence(
-    db.prepare("SELECT * FROM sentences WHERE id = ?").get(sentence.id) as SentenceRow,
+    db.prepare(
+      `SELECT * FROM sentences WHERE id = ?
+         AND lecture_id = (SELECT af.lecture_id FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id WHERE ac.id = ?)`,
+    ).get(sentence.id, sentence.chunkId) as SentenceRow,
   );
 }
 
@@ -908,6 +957,7 @@ export type SentenceUpdate = Partial<Pick<Sentence,
 
 export function updateSentence(
   db: Database.Database,
+  lectureId: string,
   id: string,
   updates: SentenceUpdate,
 ): void {
@@ -927,15 +977,16 @@ export function updateSentence(
   if (updates.correctedText !== undefined) { setClauses.push("corrected_text = ?"); values.push(updates.correctedText); }
 
   if (setClauses.length === 0) return;
-  values.push(id);
-  db.prepare(`UPDATE sentences SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+  values.push(lectureId, id);
+  db.prepare(`UPDATE sentences SET ${setClauses.join(", ")} WHERE lecture_id = ? AND id = ?`).run(...values);
 }
 
 export function getSentence(
   db: Database.Database,
+  lectureId: string,
   id: string,
 ): Sentence | undefined {
-  const row = db.prepare("SELECT * FROM sentences WHERE id = ?").get(id) as SentenceRow | undefined;
+  const row = db.prepare("SELECT * FROM sentences WHERE lecture_id = ? AND id = ?").get(lectureId, id) as SentenceRow | undefined;
   return row ? rowToSentence(row) : undefined;
 }
 
@@ -995,10 +1046,7 @@ export function sentenceBelongsToLecture(
 ): boolean {
   const row = db
     .prepare(
-      `SELECT 1 FROM sentences s
-       JOIN audio_chunks ac ON s.chunk_id = ac.id
-       JOIN audio_files af ON ac.audio_file_id = af.id
-       WHERE s.id = ? AND af.lecture_id = ?`,
+      `SELECT 1 FROM sentences s WHERE s.id = ? AND s.lecture_id = ?`,
     )
     .get(sentenceId, lectureId);
   return row !== undefined;
@@ -1047,22 +1095,22 @@ export type StitchBackup = Pick<
 
 // The sentence's fields as they were before it absorbed the start of the next chunk, so pass 2
 // can undo the stitch when that next chunk is re-transcribed.
-export function setSentenceStitchBackup(db: Database.Database, id: string, backup: StitchBackup | null): void {
-  db.prepare("UPDATE sentences SET stitch_backup = ? WHERE id = ?").run(backup ? JSON.stringify(backup) : null, id);
+export function setSentenceStitchBackup(db: Database.Database, lectureId: string, id: string, backup: StitchBackup | null): void {
+  db.prepare("UPDATE sentences SET stitch_backup = ? WHERE lecture_id = ? AND id = ?").run(backup ? JSON.stringify(backup) : null, lectureId, id);
 }
 
-export function getSentenceStitchBackup(db: Database.Database, id: string): StitchBackup | null {
-  const row = db.prepare("SELECT stitch_backup FROM sentences WHERE id = ?").get(id) as
+export function getSentenceStitchBackup(db: Database.Database, lectureId: string, id: string): StitchBackup | null {
+  const row = db.prepare("SELECT stitch_backup FROM sentences WHERE lecture_id = ? AND id = ?").get(lectureId, id) as
     | { stitch_backup: string | null }
     | undefined;
   return row?.stitch_backup ? (JSON.parse(row.stitch_backup) as StitchBackup) : null;
 }
 
-export function listSentencesStitchedInto(db: Database.Database, ids: string[]): Sentence[] {
+export function listSentencesStitchedInto(db: Database.Database, lectureId: string, ids: string[]): Sentence[] {
   if (ids.length === 0) return [];
   const marks = ids.map(() => "?").join(",");
   return (
-    db.prepare(`SELECT * FROM sentences WHERE stitched_into IN (${marks})`).all(...ids) as SentenceRow[]
+    db.prepare(`SELECT * FROM sentences WHERE lecture_id = ? AND stitched_into IN (${marks})`).all(lectureId, ...ids) as SentenceRow[]
   ).map(rowToSentence);
 }
 
@@ -1543,6 +1591,7 @@ function computeBlockLowConfidence(
 
 export function withLowConfidence(
   db: Database.Database,
+  lectureId: string,
   blocks: MergedBlock[],
 ): MergedBlock[] {
   const transcriptIds = new Set<string>();
@@ -1557,8 +1606,8 @@ export function withLowConfidence(
   if (transcriptIds.size > 0) {
     const placeholders = Array.from(transcriptIds).map(() => "?").join(",");
     const rows = db.prepare(
-      `SELECT id, flag_state FROM sentences WHERE id IN (${placeholders})`,
-    ).all([...transcriptIds]) as { id: string; flag_state: string }[];
+      `SELECT id, flag_state FROM sentences WHERE lecture_id = ? AND id IN (${placeholders})`,
+    ).all([lectureId, ...transcriptIds]) as { id: string; flag_state: string }[];
     for (const row of rows) {
       flagStates.set(row.id, row.flag_state);
     }

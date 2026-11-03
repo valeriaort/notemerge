@@ -128,22 +128,22 @@ export function buildChunkGlossary(
 // boundaries are undone so they can be applied again to the new sentences: the previous chunk's
 // last sentence gets back the text it had before absorbing this chunk's first sentence, and the
 // next chunk's first sentence, absorbed by this chunk's last, becomes active again.
-export function retireChunkSentences(db: Database.Database, chunkId: string): void {
+export function retireChunkSentences(db: Database.Database, lectureId: string, chunkId: string): void {
   const old = listSentencesByChunk(db, chunkId);
   for (const s of old) {
     if (s.stitchedInto === null) continue;
-    const backup = getSentenceStitchBackup(db, s.stitchedInto);
+    const backup = getSentenceStitchBackup(db, lectureId, s.stitchedInto);
     if (backup) {
-      updateSentence(db, s.stitchedInto, { ...backup, flagState: "unflagged", flagReasons: [] });
-      setSentenceStitchBackup(db, s.stitchedInto, null);
+      updateSentence(db, lectureId, s.stitchedInto, { ...backup, flagState: "unflagged", flagReasons: [] });
+      setSentenceStitchBackup(db, lectureId, s.stitchedInto, null);
     }
-    updateSentence(db, s.id, { stitchedInto: null });
+    updateSentence(db, lectureId, s.id, { stitchedInto: null });
   }
-  for (const victim of listSentencesStitchedInto(db, old.map((s) => s.id))) {
-    updateSentence(db, victim.id, { status: "active", stitchedInto: null });
+  for (const victim of listSentencesStitchedInto(db, lectureId, old.map((s) => s.id))) {
+    updateSentence(db, lectureId, victim.id, { status: "active", stitchedInto: null });
   }
   for (const s of old) {
-    if (s.status === "active") updateSentence(db, s.id, { status: "retired" });
+    if (s.status === "active") updateSentence(db, lectureId, s.id, { status: "retired" });
   }
 }
 
@@ -177,7 +177,7 @@ export function finishPass2(
     });
   }
   for (const s of listSentencesByLecture(db, lectureId)) {
-    if (targets.has(s.id)) updateSentence(db, s.id, { flagState: "unflagged", flagReasons: [] });
+    if (targets.has(s.id)) updateSentence(db, lectureId, s.id, { flagState: "unflagged", flagReasons: [] });
   }
   flagSentences(db, lectureId, notesDoc, abbrevPairs, subjectGlossary, thresholds, {
     sentenceIds: targets,

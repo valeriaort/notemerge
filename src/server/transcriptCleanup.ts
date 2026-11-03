@@ -59,7 +59,7 @@ export function stitchAcrossChunkBoundaries(
 
       if (!TERMINAL_PUNCT_RE.test(lastSent.text) && startsLowercase(firstSent.text)) {
         const stitchedText = (lastSent.text + " " + firstSent.text).replace(/\s+/g, " ").trim();
-        setSentenceStitchBackup(db, lastSent.id, {
+        setSentenceStitchBackup(db, lectureId, lastSent.id, {
           text: lastSent.text,
           avgLogprob: lastSent.avgLogprob,
           noSpeechProb: lastSent.noSpeechProb,
@@ -67,7 +67,7 @@ export function stitchAcrossChunkBoundaries(
           audioEndOffsetMs: lastSent.audioEndOffsetMs,
           clockEndTimeMs: lastSent.clockEndTimeMs,
         });
-        updateSentence(db, lastSent.id, {
+        updateSentence(db, lectureId, lastSent.id, {
           text: stitchedText,
           avgLogprob: Math.min(lastSent.avgLogprob, firstSent.avgLogprob),
           noSpeechProb: Math.max(lastSent.noSpeechProb, firstSent.noSpeechProb),
@@ -75,7 +75,7 @@ export function stitchAcrossChunkBoundaries(
           audioEndOffsetMs: firstSent.audioEndOffsetMs,
           clockEndTimeMs: firstSent.clockEndTimeMs,
         });
-        updateSentence(db, firstSent.id, {
+        updateSentence(db, lectureId, firstSent.id, {
           status: "retired",
           stitchedInto: lastSent.id,
         });
@@ -95,7 +95,7 @@ export function removeFillerSentences(
   const sentences = listSentencesByLecture(db, lectureId).filter((s) => s.status === "active");
   for (const sent of sentences) {
     if (FILLER_RE.test(sent.text)) {
-      updateSentence(db, sent.id, {
+      updateSentence(db, lectureId, sent.id, {
         status: "retired",
         flagReasons: ["filler"],
       });
@@ -239,7 +239,7 @@ export function flagSentences(
     if (hasMedicalTermAbsentFromGlossary(sent.text, knownTerms)) reasons.push("unrecognized_medical_term");
 
     if (reasons.length > 0) {
-      updateSentence(db, sent.id, {
+      updateSentence(db, lectureId, sent.id, {
         flagState: "flagged_unhandled",
         flagReasons: reasons,
       });

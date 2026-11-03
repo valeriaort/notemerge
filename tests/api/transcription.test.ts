@@ -206,6 +206,29 @@ describe("sentence IDs and metrics", () => {
     }
   }, TEST_TIMEOUT);
 
+  it("a second lecture can be transcribed after another lecture already has sentences", async () => {
+    speechToText.setDefaultSegments([
+      { startMs: 0, endMs: 2000, text: "Primera oración.", avgLogprob: -0.3, noSpeechProb: 0.1, compressionRatio: 1.0 },
+    ]);
+    const subject = await createSubject("Multi");
+
+    const first = await createLecture();
+    await putNotes(first.id, notesWithNoBlockInRange());
+    await uploadAudio(first.id, subject.id, RECORDING_START);
+    expect((await triggerTranscription(first.id)).status).toBe(201);
+
+    const second = await createLecture();
+    await putNotes(second.id, notesWithNoBlockInRange());
+    await uploadAudio(second.id, subject.id, RECORDING_START);
+    const { status, body } = await triggerTranscription(second.id);
+    expect(body.error).toBeUndefined();
+    expect(status).toBe(201);
+
+    const sentRes = await fetch(`${server.url}/api/lectures/${second.id}/sentences`);
+    const sentBody = await sentRes.json() as { sentences: Sentence[] };
+    expect(sentBody.sentences.length).toBeGreaterThan(0);
+  }, TEST_TIMEOUT);
+
   it("assigns worst-of-overlapped-segments metrics to sentences", async () => {
     // Two segments with no terminal punct on first → one combined sentence
     speechToText.setDefaultSegments([

@@ -430,7 +430,7 @@ export async function transcribeLecture(
           glossaryFor(audioFile, chunk).prompt,
           baseDelayMs,
         );
-        retireChunkSentences(db, chunk.id);
+        retireChunkSentences(db, lectureId, chunk.id);
         storeChunkSentences(db, audioFile, chunk, rawResult, countSentencesForAudioFile(db, audioFile.id) + 1);
         setChunkPass2Result(db, chunk.id, JSON.stringify(rawResult));
       } catch (err) {

@@ -47,7 +47,7 @@ export function mergeRoutes(
 
     try {
       const mergeRun = await mergeLecture(db, lecture.id, providers, config);
-      const blocks = withLowConfidence(db, listMergedBlocks(db, mergeRun.id));
+      const blocks = withLowConfidence(db, lecture.id, listMergedBlocks(db, mergeRun.id));
       res.status(201).json({ mergeRun, mergedNote: blocks });
     } catch (err) {
       if (err instanceof Error && err.message === "ALREADY_MERGED") {
@@ -109,7 +109,7 @@ export function mergeRoutes(
       return;
     }
 
-    const blocks = withLowConfidence(db, listMergedBlocks(db, mergeRun.id));
+    const blocks = withLowConfidence(db, lecture.id, listMergedBlocks(db, mergeRun.id));
     res.json({ blocks });
   });
 
@@ -181,7 +181,7 @@ export function mergeRoutes(
     }
 
     const updated = getMergedBlock(db, existing.id);
-    const [enriched] = withLowConfidence(db, [updated!]);
+    const [enriched] = withLowConfidence(db, lecture.id, [updated!]);
     res.json({ block: enriched });
   });
 
@@ -206,7 +206,7 @@ export function mergeRoutes(
     try {
       const updatedRun = await retryMergeLecture(db, lecture.id, providers, config);
       const rawBlocks = updatedRun.state === "done" ? listMergedBlocks(db, updatedRun.id) : [];
-      const blocks = updatedRun.state === "done" ? withLowConfidence(db, rawBlocks) : rawBlocks;
+      const blocks = updatedRun.state === "done" ? withLowConfidence(db, lecture.id, rawBlocks) : rawBlocks;
       res.status(200).json({ mergeRun: updatedRun, mergedNote: blocks });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";

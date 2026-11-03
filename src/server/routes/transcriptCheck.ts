@@ -61,7 +61,7 @@ export function transcriptCheckRoutes(
       return;
     }
 
-    const sentence = getSentence(db, sentenceId);
+    const sentence = getSentence(db, lecture.id, sentenceId);
     if (!sentence) {
       res.status(404).json({ error: strings.transcriptCheck.sentenceNotFound });
       return;
@@ -82,15 +82,15 @@ export function transcriptCheckRoutes(
         res.status(400).json({ error: strings.transcriptCheck.correctedTextRequired });
         return;
       }
-      updateSentence(db, sentenceId, {
+      updateSentence(db, lecture.id, sentenceId, {
         flagState: "corrected",
         correctedText: body.correctedText as string,
       });
     } else {
-      updateSentence(db, sentenceId, { flagState: "advanced" });
+      updateSentence(db, lecture.id, sentenceId, { flagState: "advanced" });
     }
 
-    const updatedSentence = getSentence(db, sentenceId)!;
+    const updatedSentence = getSentence(db, lecture.id, sentenceId)!;
 
     // Auto-start merge when queue is now empty
     const remaining = listFlaggedUnhandledSentencesByLecture(db, lecture.id);
@@ -148,7 +148,7 @@ export function transcriptCheckRoutes(
       res.status(404).json({ error: strings.transcriptCheck.sentenceNotInLecture });
       return;
     }
-    const sentence = getSentence(db, sentenceId);
+    const sentence = getSentence(db, lecture.id, sentenceId);
     if (!sentence) {
       res.status(404).json({ error: strings.transcriptCheck.sentenceNotFound });
       return;
