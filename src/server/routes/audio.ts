@@ -297,9 +297,10 @@ export function audioSourcesRoutes(
         );
         for (let ci = 0; ci < p.chunks.length; ci++) {
           const chunk = p.chunks[ci]!;
+          // Chunk names (A01-C001) repeat in every lecture; audio_chunks.id is unique database-wide.
           createAudioChunk(
             db,
-            chunk.id,
+            `${p.audioFileId}-${chunk.name}`,
             audioFile.id,
             ci + 1,
             chunk.filePath,
