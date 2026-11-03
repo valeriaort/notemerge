@@ -125,6 +125,53 @@ function dropZoneStyle(active: boolean): React.CSSProperties {
   };
 }
 
+const AUDIO_ACCEPT = "audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,.webm";
+const NOTES_ACCEPT = ".pdf,.md,.markdown,.docx,application/pdf,text/markdown";
+const AUDIO_EXTENSIONS = /\.(m4a|mp3|wav|aac|ogg|flac|webm)$/i;
+const NOTES_ONLY_EXTENSIONS = /\.(md|markdown|docx)$/i;
+
+function isAudio(file: File): boolean {
+  return file.type.startsWith("audio/") || AUDIO_EXTENSIONS.test(file.name);
+}
+
+function isNotesOnly(file: File): boolean {
+  return NOTES_ONLY_EXTENSIONS.test(file.name);
+}
+
+function AudioDropZone(props: {
+  label: string;
+  hint: string;
+  file: File | null;
+  onFile: (f: File) => void;
+  testId: string;
+  startTime?: { label: string; hint: string; value: string; onChange: (v: string) => void; testId: string };
+  children?: React.ReactNode;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div>
+      <div style={styles.fieldLabel}>{props.label}</div>
+      <div
+        style={dropZoneStyle(props.file !== null)}
+        onClick={() => inputRef.current?.click()}
+        data-testid={`${props.testId}-drop-zone`}
+      >
+        {props.file ? `${strings.sources.audioAccepted}: ${props.file.name}` : props.hint}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={AUDIO_ACCEPT}
+        style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) props.onFile(f); }}
+        data-testid={`${props.testId}-file-input`}
+      />
+      {props.startTime && props.file && <StartTimeField {...props.startTime} />}
+      {props.children}
+    </div>
+  );
+}
+
 function StartTimeField(props: { label: string; hint: string; value: string; onChange: (v: string) => void; testId: string }) {
   return (
     <div style={{ marginTop: "0.75rem" }}>
@@ -158,7 +205,6 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
   const [audio2File, setAudio2File] = useState<File | null>(null);
   const [audio1Start, setAudio1Start] = useState("");
   const [audio2Start, setAudio2Start] = useState("");
-  const [sealedWithAudio, setSealedWithAudio] = useState(false);
   const [continuing, setContinuing] = useState(false);
   const [failedChunks, setFailedChunks] = useState<Array<{ id: string; chunkName: string; lastError: string | null }>>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -168,9 +214,12 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
   const fileInputRef = useRef<HTMLInputElement>(null);
   const guiaInputRef = useRef<HTMLInputElement>(null);
   const notesInputRef = useRef<HTMLInputElement>(null);
-  const audio1InputRef = useRef<HTMLInputElement>(null);
-  const audio2InputRef = useRef<HTMLInputElement>(null);
   const untimed = mode === "untimed";
+  const audio1FileRef = useRef<File | null>(null);
+  const presentationFileRef = useRef<File | null>(null);
+  audio1FileRef.current = audio1File;
+  presentationFileRef.current = presentationFile;
+  const sealedWithAudio = audio1File !== null;
 
   useEffect(() => {
     fetch(`/api/lectures/${lectureId}`)
@@ -215,9 +264,21 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragActive(false);
-    const file = e.dataTransfer.files[0];
-    if (file) setPresentationFile(file);
-  }, []);
+    // Route by type. A PDF is the presentation, or the notes once an untimed lecture has one.
+    let hasAudio1 = audio1FileRef.current !== null;
+    let hasPresentation = presentationFileRef.current !== null;
+    for (const file of Array.from(e.dataTransfer.files)) {
+      if (isAudio(file)) {
+        if (!hasAudio1) { setAudio1File(file); hasAudio1 = true; }
+        else setAudio2File(file);
+      } else if (untimed && (isNotesOnly(file) || hasPresentation)) {
+        setNotesFile(file);
+      } else {
+        setPresentationFile(file);
+        hasPresentation = true;
+      }
+    }
+  }, [untimed]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -292,10 +353,9 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
         }).catch(() => { /* non-blocking */ });
       }
 
-      setSealedWithAudio(audio1File !== null);
       setSealedSlides(body.slides ?? []);
     } catch {
-      setError("Upload failed. Please try again.");
+      setError(strings.sources.uploadFailed);
     } finally {
       setSubmitting(false);
     }
@@ -380,7 +440,6 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
             >
               {continuing ? strings.sources.transcribing : strings.sources.continueButton}
             </button>
-            {error && <p style={styles.error} data-testid="sources-error">{error}</p>}
             {failedChunks.length > 0 && (
               <ul data-testid="failed-chunks" style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.85rem" }}>
                 {failedChunks.map((c) => (
@@ -449,7 +508,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
                     style={styles.backBtn}
                     onClick={() => setPickerMode("existing")}
                   >
-                    Cancel
+                    {strings.sources.cancel}
                   </button>
                 </div>
                 {/* Optional guía docente upload for new subject */}
@@ -499,7 +558,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
               <input
                 ref={notesInputRef}
                 type="file"
-                accept=".pdf,.md,.markdown,.docx,application/pdf,text/markdown"
+                accept={NOTES_ACCEPT}
                 style={{ display: "none" }}
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) setNotesFile(f); }}
                 data-testid="notes-file-input"
@@ -530,70 +589,39 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
             {/* (guia file input rendered inside the picker section above) */}
           </div>
 
-          {(
-            <div>
-              <div style={styles.fieldLabel}>{strings.sources.audioLabel}</div>
-              <div
-                style={dropZoneStyle(audio1File !== null)}
-                onClick={() => audio1InputRef.current?.click()}
-                data-testid="audio1-drop-zone"
-              >
-                {audio1File
-                  ? `${strings.sources.audioAccepted}: ${audio1File.name}`
-                  : strings.sources.audioDropHint}
-              </div>
-              <input
-                ref={audio1InputRef}
-                type="file"
-                accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,.webm"
-                style={{ display: "none" }}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) setAudio1File(f); }}
-                data-testid="audio1-file-input"
-              />
-              {!untimed && audio1File && (
-                <StartTimeField
-                  label={strings.sources.audio1StartLabel}
-                  hint={strings.sources.audio1StartHint}
-                  value={audio1Start}
-                  onChange={setAudio1Start}
-                  testId="audio1-start-time"
+          <AudioDropZone
+            label={strings.sources.audioLabel}
+            hint={strings.sources.audioDropHint}
+            file={audio1File}
+            onFile={setAudio1File}
+            testId="audio1"
+            startTime={untimed ? undefined : {
+              label: strings.sources.audio1StartLabel,
+              hint: strings.sources.audio1StartHint,
+              value: audio1Start,
+              onChange: setAudio1Start,
+              testId: "audio1-start-time",
+            }}
+          >
+            {audio1File && (
+              <div style={{ marginTop: "0.75rem" }}>
+                <AudioDropZone
+                  label={strings.sources.audio2Label}
+                  hint={strings.sources.audio2DropHint}
+                  file={audio2File}
+                  onFile={setAudio2File}
+                  testId="audio2"
+                  startTime={untimed ? undefined : {
+                    label: strings.sources.audio2StartLabel,
+                    hint: strings.sources.audio2StartHint,
+                    value: audio2Start,
+                    onChange: setAudio2Start,
+                    testId: "audio2-start-time",
+                  }}
                 />
-              )}
-              {audio1File && (
-                <div style={{ marginTop: "0.75rem" }}>
-                  <div style={styles.fieldLabel}>{strings.sources.audio2Label}</div>
-                  <div
-                    style={dropZoneStyle(audio2File !== null)}
-                    onClick={() => audio2InputRef.current?.click()}
-                    data-testid="audio2-drop-zone"
-                  >
-                    {audio2File
-                      ? `${strings.sources.audioAccepted}: ${audio2File.name}`
-                      : strings.sources.audio2DropHint}
-                  </div>
-                  <input
-                    ref={audio2InputRef}
-                    type="file"
-                    accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,.webm"
-                    style={{ display: "none" }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) setAudio2File(f); }}
-                    data-testid="audio2-file-input"
-                  />
-                  {!untimed && audio2File && (
-                    <StartTimeField
-                      label={strings.sources.audio2StartLabel}
-                      hint={strings.sources.audio2StartHint}
-                      value={audio2Start}
-                      onChange={setAudio2Start}
-                      testId="audio2-start-time"
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {error && <p style={styles.error} data-testid="sources-error">{error}</p>}
+              </div>
+            )}
+          </AudioDropZone>
 
           <button
             style={canSubmit ? styles.submitBtn : styles.submitBtnDisabled}
@@ -601,9 +629,10 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
             disabled={!canSubmit}
             data-testid="submit-sources"
           >
-            {submitting ? "Uploading…" : strings.sources.submitButton}
+            {submitting ? strings.sources.uploading : strings.sources.submitButton}
           </button>
         </div>}
+        {error && <p style={styles.error} data-testid="sources-error">{error}</p>}
       </div>
     </div>
   );
