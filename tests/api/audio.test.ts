@@ -433,4 +433,31 @@ describe("audio across multiple lectures", () => {
     const body = (await res2.json()) as { lecture: Lecture };
     expect(body.lecture.stage).toBe("sealed");
   });
+
+  it("a second lecture can upload two audio files after another lecture has two", async () => {
+    const subject = await createSubject("Multi");
+    const twoFiles = { subjectId: subject.id, audio1: SHORT_AUDIO, audio2: SHORT_AUDIO, audio1StartTime: 1_700_000_000_000, audio2StartTime: 1_700_000_600_000 };
+
+    const first = await createLecture();
+    expect((await uploadSources(first.id, twoFiles)).status).toBe(200);
+
+    const second = await createLecture();
+    const res = await uploadSources(second.id, twoFiles);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { lecture: Lecture };
+    expect(body.lecture.stage).toBe("sealed");
+
+    const chunkIds = (lectureId: string) =>
+      (server.db
+        .prepare(
+          `SELECT ac.id FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id
+           WHERE af.lecture_id = ?`,
+        )
+        .all(lectureId) as Array<{ id: string }>).map((r) => r.id);
+    const firstIds = chunkIds(first.id);
+    const secondIds = chunkIds(second.id);
+    expect(firstIds.some((id) => id.endsWith("A02-C001"))).toBe(true);
+    expect(secondIds.some((id) => id.endsWith("A02-C001"))).toBe(true);
+    expect(secondIds.filter((id) => firstIds.includes(id))).toEqual([]);
+  });
 });

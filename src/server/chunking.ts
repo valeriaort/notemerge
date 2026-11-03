@@ -6,7 +6,7 @@ import { mkdirSync, existsSync } from "fs";
 const execAsync = promisify(exec);
 
 export type AudioChunkInfo = {
-  id: string;           // e.g. "A01-C001"
+  name: string;         // e.g. "A01-C001": display and file name only, not the database ID
   filePath: string;
   startOffsetMs: number;
   durationMs: number;
@@ -73,8 +73,8 @@ function computeCutPoints(
   return cuts;
 }
 
-// Format chunk ID: A01-C001 (audioIndex and chunkIndex are 1-based)
-function chunkId(audioIndex: number, chunkIndex: number): string {
+// Format chunk name: A01-C001 (audioIndex and chunkIndex are 1-based)
+function chunkName(audioIndex: number, chunkIndex: number): string {
   const a = String(audioIndex).padStart(2, "0");
   const c = String(chunkIndex).padStart(3, "0");
   return `A${a}-C${c}`;
@@ -110,9 +110,9 @@ export async function chunkAudioFile(
     if (duration <= 0) continue;
 
     const index = i + 1;
-    const id = chunkId(audioIndex, index);
+    const name = chunkName(audioIndex, index);
     const ext = path.extname(audioPath) || ".wav";
-    const chunkPath = path.join(outputDir, `${id}${ext}`);
+    const chunkPath = path.join(outputDir, `${name}${ext}`);
 
     try {
       await execAsync(
@@ -120,7 +120,7 @@ export async function chunkAudioFile(
         { shell: "/bin/bash" },
       );
     } catch (err) {
-      return { ok: false, error: `ffmpeg cut failed for chunk ${id}: ${String(err)}` };
+      return { ok: false, error: `ffmpeg cut failed for chunk ${name}: ${String(err)}` };
     }
 
     if (!existsSync(chunkPath)) {
@@ -128,7 +128,7 @@ export async function chunkAudioFile(
     }
 
     chunks.push({
-      id,
+      name,
       filePath: chunkPath,
       startOffsetMs: Math.round(start * 1000),
       durationMs: Math.round(duration * 1000),
