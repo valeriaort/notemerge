@@ -1,7 +1,7 @@
 # Audio upload fails after the first lecture with audio
 
 **Date:** 2026-11-03
-**Status:** Diagnosed, fix tracked in #60, #61, #62
+**Status:** Diagnosed, fix tracked in #60, #61, #62, #63
 **Severity:** High. Blocks every new lecture with audio once any earlier lecture has audio.
 
 ## Symptoms
@@ -60,6 +60,7 @@ It creates two lectures in the same database and uploads audio to both. It fails
 | #60 | Make chunk IDs unique across lectures (chunk file names on disk unchanged). Makes the regression test pass. |
 | #61 | Run phase 2 of the upload in one transaction, and replace leftover audio rows when a not-yet-sealed lecture is uploaded again. |
 | #62 | Send async route errors to an error middleware that returns `500 { error }` JSON, so failures show a message instead of hanging the UI and crashing the server. |
+| #63 | Found while fixing #60: sentence IDs (`A01-T0001`) collide the same way, so transcription fails for the second lecture. They are shown in the UI and cited in LLM prompts, so they need their own design. |
 
 #60 alone unblocks uploads. #61 and #62 keep the next failure from leaving a corrupt lecture or killing the server.
 
