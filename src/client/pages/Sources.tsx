@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Lecture, LectureMode, Subject } from "../../shared/types.js";
 import { strings } from "../../shared/strings.js";
+import { madridInputToMs, msToMadridInput } from "../recordingStart.js";
 
 type ExtractedSlide = {
   id: string;
@@ -124,6 +125,25 @@ function dropZoneStyle(active: boolean): React.CSSProperties {
   };
 }
 
+function StartTimeField(props: { label: string; hint: string; value: string; onChange: (v: string) => void; testId: string }) {
+  return (
+    <div style={{ marginTop: "0.75rem" }}>
+      <label style={styles.fieldLabel}>
+        {props.label}
+        <input
+          type="datetime-local"
+          step={1}
+          style={styles.input}
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          data-testid={props.testId}
+        />
+      </label>
+      <p style={{ fontSize: "0.8rem", color: "#888", margin: "0.25rem 0 0" }}>{props.hint}</p>
+    </div>
+  );
+}
+
 export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesProps) {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [lastUsedSubjectId, setLastUsedSubjectId] = useState<string | null>(null);
@@ -136,6 +156,8 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
   const [guiaFile, setGuiaFile] = useState<File | null>(null);
   const [audio1File, setAudio1File] = useState<File | null>(null);
   const [audio2File, setAudio2File] = useState<File | null>(null);
+  const [audio1Start, setAudio1Start] = useState("");
+  const [audio2Start, setAudio2Start] = useState("");
   const [sealedWithAudio, setSealedWithAudio] = useState(false);
   const [continuing, setContinuing] = useState(false);
   const [failedChunks, setFailedChunks] = useState<Array<{ id: string; chunkName: string; lastError: string | null }>>([]);
@@ -155,6 +177,15 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
       .then((r) => (r.ok ? r.json() : null))
       .then((l: Lecture | null) => { if (l) setMode(l.mode); })
       .catch(() => { /* stay in live mode */ });
+  }, [lectureId]);
+
+  useEffect(() => {
+    fetch(`/api/lectures/${lectureId}/audio-start-suggestion`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b: { suggestedStartMs: number | null } | null) => {
+        if (b?.suggestedStartMs != null) setAudio1Start((cur) => cur || msToMadridInput(b.suggestedStartMs!));
+      })
+      .catch(() => { /* no suggestion: the user types it */ });
   }, [lectureId]);
 
   useEffect(() => {
@@ -195,7 +226,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
 
   const handleSubmit = useCallback(async () => {
     setError(null);
-    if (!presentationFile && !untimed) {
+    if (!presentationFile && !audio1File && !untimed) {
       setError(strings.sources.notesAloneError);
       return;
     }
@@ -203,8 +234,22 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
     const formData = new FormData();
     if (presentationFile) formData.append("presentation", presentationFile);
     if (untimed && notesFile) formData.append("notes", notesFile);
-    if (untimed && audio1File) formData.append("audio1", audio1File);
-    if (untimed && audio2File) formData.append("audio2", audio2File);
+    if (audio1File) formData.append("audio1", audio1File);
+    if (audio2File) formData.append("audio2", audio2File);
+    if (!untimed) {
+      for (const [file, value, field] of [
+        [audio1File, audio1Start, "audio1StartTime"],
+        [audio2File, audio2Start, "audio2StartTime"],
+      ] as const) {
+        if (!file) continue;
+        const ms = value ? madridInputToMs(value) : null;
+        if (ms === null) {
+          setError(strings.sources.startTimeRequiredError);
+          return;
+        }
+        formData.append(field, String(ms));
+      }
+    }
 
     if (pickerMode === "new") {
       if (!newSubjectName.trim()) {
@@ -247,14 +292,14 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
         }).catch(() => { /* non-blocking */ });
       }
 
-      setSealedWithAudio(untimed && audio1File !== null);
+      setSealedWithAudio(audio1File !== null);
       setSealedSlides(body.slides ?? []);
     } catch {
       setError("Upload failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
-  }, [presentationFile, notesFile, audio1File, audio2File, untimed, guiaFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
+  }, [presentationFile, notesFile, audio1File, audio2File, audio1Start, audio2Start, untimed, guiaFile, pickerMode, newSubjectName, selectedSubjectId, subjects.length, lectureId, onSealed]);
 
   const handleContinue = useCallback(async () => {
     if (!sealedWithAudio) {
@@ -485,7 +530,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
             {/* (guia file input rendered inside the picker section above) */}
           </div>
 
-          {untimed && (
+          {(
             <div>
               <div style={styles.fieldLabel}>{strings.sources.audioLabel}</div>
               <div
@@ -505,6 +550,15 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) setAudio1File(f); }}
                 data-testid="audio1-file-input"
               />
+              {!untimed && audio1File && (
+                <StartTimeField
+                  label={strings.sources.audio1StartLabel}
+                  hint={strings.sources.audio1StartHint}
+                  value={audio1Start}
+                  onChange={setAudio1Start}
+                  testId="audio1-start-time"
+                />
+              )}
               {audio1File && (
                 <div style={{ marginTop: "0.75rem" }}>
                   <div style={styles.fieldLabel}>{strings.sources.audio2Label}</div>
@@ -525,6 +579,15 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) setAudio2File(f); }}
                     data-testid="audio2-file-input"
                   />
+                  {!untimed && audio2File && (
+                    <StartTimeField
+                      label={strings.sources.audio2StartLabel}
+                      hint={strings.sources.audio2StartHint}
+                      value={audio2Start}
+                      onChange={setAudio2Start}
+                      testId="audio2-start-time"
+                    />
+                  )}
                 </div>
               )}
             </div>
