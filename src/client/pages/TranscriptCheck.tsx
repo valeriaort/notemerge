@@ -28,6 +28,21 @@ export function TranscriptCheck({ lectureId, onMergeStarted, onBack }: Transcrip
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/lectures/${lectureId}/transcript-check`);
+      if (res.status === 409) {
+        // Not at this stage: send the user to the screen the lecture is really on.
+        const lectureRes = await fetch(`/api/lectures/${lectureId}`);
+        if (lectureRes.ok) {
+          const lecture = await lectureRes.json() as { stage: string };
+          if (lecture.stage === "review" || lecture.stage === "exported") {
+            window.location.hash = `/review/${lectureId}`;
+            return;
+          }
+          if (lecture.stage === "sealed" || lecture.stage === "sources") {
+            window.location.hash = `/sources/${lectureId}`;
+            return;
+          }
+        }
+      }
       if (!res.ok) {
         const body = await res.json() as { error?: string };
         setError(body.error ?? "Failed to load check status.");

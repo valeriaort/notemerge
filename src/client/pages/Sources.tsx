@@ -138,6 +138,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
   const [audio2File, setAudio2File] = useState<File | null>(null);
   const [sealedWithAudio, setSealedWithAudio] = useState(false);
   const [continuing, setContinuing] = useState(false);
+  const [failedChunks, setFailedChunks] = useState<Array<{ id: string; chunkName: string; lastError: string | null }>>([]);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,6 +262,7 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
       return;
     }
     setError(null);
+    setFailedChunks([]);
     setContinuing(true);
     try {
       const res = await fetch(`/api/lectures/${lectureId}/transcribe`, { method: "POST" });
@@ -269,7 +271,18 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
         setError(body.error ?? strings.sources.transcribeFailed);
         return;
       }
-      onTranscribed();
+      const run = await res.json() as { transcriptRun?: { state?: string } };
+      if (run.transcriptRun?.state === "done") {
+        onTranscribed();
+        return;
+      }
+      // Paused: the lecture is still sealed, so stay here and offer Retry.
+      const status = await fetch(`/api/lectures/${lectureId}/transcribe`);
+      const detail = status.ok
+        ? await status.json() as { failedChunks?: Array<{ id: string; chunkName: string; lastError: string | null }> }
+        : {};
+      setFailedChunks(detail.failedChunks ?? []);
+      setError(strings.sources.transcribePaused);
     } catch {
       setError(strings.sources.transcribeFailed);
     } finally {
@@ -323,6 +336,25 @@ export function Sources({ lectureId, onSealed, onTranscribed, onBack }: SourcesP
               {continuing ? strings.sources.transcribing : strings.sources.continueButton}
             </button>
             {error && <p style={styles.error} data-testid="sources-error">{error}</p>}
+            {failedChunks.length > 0 && (
+              <ul data-testid="failed-chunks" style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.85rem" }}>
+                {failedChunks.map((c) => (
+                  <li key={c.id} data-testid="failed-chunk">
+                    {c.chunkName}{c.lastError ? ` — ${c.lastError}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {failedChunks.length > 0 && (
+              <button
+                style={{ ...styles.submitBtn, alignSelf: "flex-end" }}
+                onClick={handleContinue}
+                disabled={continuing}
+                data-testid="retry-transcription"
+              >
+                {continuing ? strings.sources.transcribing : strings.sources.retryButton}
+              </button>
+            )}
           </div>
         )}
 

@@ -53,6 +53,8 @@ export const strings = {
     audioAccepted: "Audio ready",
     transcribing: "Transcribing…",
     transcribeFailed: "Transcription failed. Please try again.",
+    transcribePaused: "Transcription paused. These chunks failed:",
+    retryButton: "Retry",
   },
   windows: {
     countDiffNotice: (windows: number, slides: number) =>
