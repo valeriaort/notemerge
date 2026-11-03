@@ -126,11 +126,12 @@ export function audioSourcesRoutes(
       const notesFile = files?.["notes"]?.[0];
       const untimed = lecture.mode === "untimed";
 
+      if (SEALED_STAGES.has(lecture.stage)) {
+        res.status(409).json({ error: strings.lectureMode.alreadySealed });
+        return;
+      }
+
       if (untimed) {
-        if (SEALED_STAGES.has(lecture.stage)) {
-          res.status(409).json({ error: strings.lectureMode.alreadySealed });
-          return;
-        }
         if (!notesFile) {
           res.status(400).json({ error: strings.lectureMode.notesFileRequired });
           return;
