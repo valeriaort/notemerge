@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "path";
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from "fs";
+import { createAudioFile } from "../../src/server/db.js";
 import { startTestServer } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 import type { Lecture, Subject, AudioFile, AudioChunk } from "../../src/shared/types.js";
@@ -459,5 +460,76 @@ describe("audio across multiple lectures", () => {
     expect(firstIds.some((id) => id.endsWith("A02-C001"))).toBe(true);
     expect(secondIds.some((id) => id.endsWith("A02-C001"))).toBe(true);
     expect(secondIds.filter((id) => firstIds.includes(id))).toEqual([]);
+  });
+});
+
+describe("failed upload and retry", () => {
+  const lectureAudioCounts = (lectureId: string) => ({
+    files: (server.db.prepare("SELECT COUNT(*) AS n FROM audio_files WHERE lecture_id = ?").get(lectureId) as { n: number }).n,
+    chunks: (server.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM audio_chunks ac JOIN audio_files af ON ac.audio_file_id = af.id
+         WHERE af.lecture_id = ?`,
+      )
+      .get(lectureId) as { n: number }).n,
+  });
+
+  it("a failure while saving leaves no audio rows, keeps stage writing, and a retry succeeds", async () => {
+    const subject = await createSubject("Atomic");
+    const lecture = await createLecture();
+    const twoFiles = { subjectId: subject.id, audio1: SHORT_AUDIO, audio2: SHORT_AUDIO, audio1StartTime: 1_700_000_000_000, audio2StartTime: 1_700_000_600_000 };
+
+    server.db.exec(
+      "CREATE TRIGGER fail_chunk BEFORE INSERT ON audio_chunks BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    );
+    const failed = await uploadSources(lecture.id, twoFiles);
+    expect(failed.status).toBe(500);
+    expect(((await failed.json()) as { error?: string }).error).toBeTruthy();
+    expect(lectureAudioCounts(lecture.id)).toEqual({ files: 0, chunks: 0 });
+    const after = (await (await fetch(`${server.url}/api/lectures/${lecture.id}`)).json()) as Lecture;
+    expect(after.stage).toBe("writing");
+
+    server.db.exec("DROP TRIGGER fail_chunk");
+    const retry = await uploadSources(lecture.id, twoFiles);
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { lecture: Lecture }).lecture.stage).toBe("sealed");
+    const counts = lectureAudioCounts(lecture.id);
+    expect(counts.files).toBe(2);
+    expect(counts.chunks).toBeGreaterThan(0);
+  });
+
+  it("an orphan audio_files row left by an earlier failure is replaced on upload", async () => {
+    const subject = await createSubject("Orphan");
+    const lecture = await createLecture();
+    const orphanId = "orphan-audio-file";
+    createAudioFile(server.db, orphanId, lecture.id, 1, path.join(lecture.dataDir, "audio1.wav"), 0, 1000);
+
+    const res = await uploadSources(lecture.id, { subjectId: subject.id, audio1: SHORT_AUDIO });
+    expect(res.status).toBe(200);
+
+    const files = server.db
+      .prepare("SELECT id, file_index FROM audio_files WHERE lecture_id = ?")
+      .all(lecture.id) as Array<{ id: string; file_index: number }>;
+    expect(files).toHaveLength(1);
+    expect(files[0]!.id).not.toBe(orphanId);
+    expect(files[0]!.file_index).toBe(1);
+    const chunkParents = server.db
+      .prepare("SELECT DISTINCT audio_file_id FROM audio_chunks WHERE audio_file_id IN (SELECT id FROM audio_files WHERE lecture_id = ?)")
+      .all(lecture.id) as Array<{ audio_file_id: string }>;
+    expect(chunkParents).toEqual([{ audio_file_id: files[0]!.id }]);
+  });
+
+  it("stale chunk files from an earlier attempt are removed before re-chunking", async () => {
+    const subject = await createSubject("Stale");
+    const lecture = await createLecture();
+    const chunksDir = path.join(lecture.dataDir, "chunks_A01");
+    mkdirSync(chunksDir, { recursive: true });
+    const stale = path.join(chunksDir, "A01-C999.wav");
+    writeFileSync(stale, "stale");
+
+    const res = await uploadSources(lecture.id, { subjectId: subject.id, audio1: SHORT_AUDIO });
+    expect(res.status).toBe(200);
+    expect(existsSync(stale)).toBe(false);
+    expect(readdirSync(chunksDir).length).toBeGreaterThan(0);
   });
 });
