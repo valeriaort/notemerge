@@ -16,6 +16,7 @@ import {
   countLectureNotionExportsForDay,
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 function toNotionType(blockNoteType: string, level?: number): string {
   switch (blockNoteType) {
@@ -171,7 +172,7 @@ export function exportRoutes(db: Database.Database, providers: Providers, cfg: C
   });
 
   // POST /:lectureId/export/notion — push final note to Notion as a new child page
-  router.post("/:lectureId/export/notion", async (req: Request, res: Response) => {
+  router.post("/:lectureId/export/notion", asyncHandler(async (req: Request, res: Response) => {
     if (!cfg.notion?.accessToken) {
       res.status(401).json({ error: strings.notion.notConnected });
       return;
@@ -251,7 +252,7 @@ export function exportRoutes(db: Database.Database, providers: Providers, cfg: C
     updateLectureStage(db, lecture.id, "exported");
 
     res.json({ pageUrl, title });
-  });
+  }));
 
   return router;
 }

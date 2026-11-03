@@ -17,6 +17,7 @@ import {
 } from "../db.js";
 import { mergeLecture } from "../mergeLecture.js";
 import { strings } from "../../shared/strings.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 export function transcriptCheckRoutes(
   db: Database.Database,
@@ -43,7 +44,7 @@ export function transcriptCheckRoutes(
   });
 
   // PATCH /:id/sentences/:sentenceId — advance or correct a flagged sentence
-  router.patch("/:id/sentences/:sentenceId", async (req: Request, res: Response) => {
+  router.patch("/:id/sentences/:sentenceId", asyncHandler(async (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["id"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -106,10 +107,10 @@ export function transcriptCheckRoutes(
     }
 
     res.json({ sentence: updatedSentence, mergeStarted: false });
-  });
+  }));
 
   // POST /:id/transcript-check/skip — skip all remaining flags and start merge
-  router.post("/:id/transcript-check/skip", async (req: Request, res: Response) => {
+  router.post("/:id/transcript-check/skip", asyncHandler(async (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["id"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -133,7 +134,7 @@ export function transcriptCheckRoutes(
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
     }
-  });
+  }));
 
   // GET /:id/sentences/:sentenceId/audio-clip — serve chunk audio for playback
   router.get("/:id/sentences/:sentenceId/audio-clip", (req: Request, res: Response) => {

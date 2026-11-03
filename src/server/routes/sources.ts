@@ -13,6 +13,7 @@ import {
 } from "../db.js";
 import { strings } from "../../shared/strings.js";
 import { extractSlidesFromPdf } from "../pdfExtraction.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 const SEALED_STAGES = new Set(["sealed", "transcript-check", "merge", "review", "exported"]);
 
@@ -26,7 +27,7 @@ export function sourcesRoutes(db: Database.Database): Router {
   router.post(
     "/:id/sources",
     upload.single("presentation"),
-    async (req: Request, res: Response) => {
+    asyncHandler(async (req: Request, res: Response) => {
       const lecture = getLecture(db, req.params["id"]!);
       if (!lecture) {
         res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -80,7 +81,7 @@ export function sourcesRoutes(db: Database.Database): Router {
       }
 
       res.json({ lecture: sealed, subject, slides: extraction.slides });
-    },
+    }),
   );
 
   return router;

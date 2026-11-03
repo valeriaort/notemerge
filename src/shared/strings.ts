@@ -89,6 +89,7 @@ export const strings = {
     saveFailed: "Failed to save notes. Please try again.",
     loadFailed: "Failed to load lecture.",
     uploadSaveFailed: "Saving the upload failed. Please try again.",
+    internal: "Something went wrong. Please try again.",
   },
   merge: {
     startButton: "Run Merge",

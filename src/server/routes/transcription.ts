@@ -20,6 +20,7 @@ import { transcribeLecture } from "../transcribeLecture.js";
 import { resolveWindows } from "../lectureWindows.js";
 import { strings } from "../../shared/strings.js";
 import type { NotesDocument, Sentence, WindowOverride } from "../../shared/types.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 export function transcriptionRoutes(
   db: Database.Database,
@@ -29,7 +30,7 @@ export function transcriptionRoutes(
   const router = Router();
 
   // POST /:id/transcribe — start transcription
-  router.post("/:id/transcribe", async (req: Request, res: Response) => {
+  router.post("/:id/transcribe", asyncHandler(async (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["id"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -51,7 +52,7 @@ export function transcriptionRoutes(
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
     }
-  });
+  }));
 
   // GET /:id/transcribe — get transcript run status
   router.get("/:id/transcribe", (req: Request, res: Response) => {

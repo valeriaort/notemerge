@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import { getSubject, updateSubjectGlossary } from "../db.js";
 import { buildSubjectGlossary } from "../../shared/termRetention.js";
 import { extractTextFromPdf } from "../pdfExtraction.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -17,7 +18,7 @@ export function glossaryRoutes(db: Database.Database, dataDir: string): Router {
   router.post(
     "/:id/guia",
     upload.single("guia"),
-    async (req: Request, res: Response) => {
+    asyncHandler(async (req: Request, res: Response) => {
       const subject = getSubject(db, req.params["id"]!);
       if (!subject) {
         res.status(404).json({ error: "Subject not found" });
@@ -56,7 +57,7 @@ export function glossaryRoutes(db: Database.Database, dataDir: string): Router {
       }
 
       res.json(updated);
-    },
+    }),
   );
 
   return router;

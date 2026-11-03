@@ -23,6 +23,7 @@ import { chunkAudioFile } from "../chunking.js";
 import { convertNotesFile } from "../notesConversion.js";
 import { config } from "../config.js";
 import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { asyncHandler } from "../asyncHandler.js";
 
 // ~2 hours maximum total audio duration
 const MAX_TOTAL_DURATION_MS = 2.5 * 60 * 60 * 1000;
@@ -111,7 +112,7 @@ export function audioSourcesRoutes(
       { name: "audio1", maxCount: 1 },
       { name: "audio2", maxCount: 1 },
     ]),
-    async (req: Request, res: Response) => {
+    asyncHandler(async (req: Request, res: Response) => {
       const lecture = getLecture(db, req.params["id"]!);
       if (!lecture) {
         res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -339,7 +340,7 @@ export function audioSourcesRoutes(
         subject,
         ...(slides.length > 0 ? { slides } : {}),
       });
-    },
+    }),
   );
 
   return router;

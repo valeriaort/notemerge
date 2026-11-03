@@ -1,5 +1,6 @@
 import { alignmentExportRoutes } from "./routes/alignmentExport.js";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
@@ -18,6 +19,7 @@ import { transcriptCheckRoutes } from "./routes/transcriptCheck.js";
 import { reviewLockRoutes } from "./routes/review.js";
 import { exportRoutes } from "./routes/export.js";
 import { notionRoutes } from "./routes/notion.js";
+import { strings } from "../shared/strings.js";
 import { config } from "./config.js";
 import type { Config } from "./config.js";
 
@@ -57,6 +59,16 @@ export function createApp(
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }
+
+  // Final error handler: log, and answer JSON so the client's fetch never hangs
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    console.error(err);
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    res.status(500).json({ error: strings.errors.internal });
+  });
 
   return app;
 }

@@ -18,6 +18,7 @@ import {
 import type { MergedBlockReviewState } from "../../shared/types.js";
 import { mergeLecture, retryMergeLecture } from "../mergeLecture.js";
 import { strings } from "../../shared/strings.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 export function mergeRoutes(
   db: Database.Database,
@@ -26,7 +27,7 @@ export function mergeRoutes(
 ): Router {
   const router = Router();
 
-  router.post("/:lectureId/merge", async (req: Request, res: Response) => {
+  router.post("/:lectureId/merge", asyncHandler(async (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["lectureId"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -60,7 +61,7 @@ export function mergeRoutes(
       const msg = err instanceof Error ? err.message : "Unknown error";
       res.status(500).json({ error: msg });
     }
-  });
+  }));
 
   router.get("/:lectureId/merge", (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["lectureId"]!);
@@ -184,7 +185,7 @@ export function mergeRoutes(
     res.json({ block: enriched });
   });
 
-  router.post("/:lectureId/merge/retry", async (req: Request, res: Response) => {
+  router.post("/:lectureId/merge/retry", asyncHandler(async (req: Request, res: Response) => {
     const lecture = getLecture(db, req.params["lectureId"]!);
     if (!lecture) {
       res.status(404).json({ error: strings.errors.lectureNotFound });
@@ -211,7 +212,7 @@ export function mergeRoutes(
       const msg = err instanceof Error ? err.message : "Unknown error";
       res.status(500).json({ error: msg });
     }
-  });
+  }));
 
   return router;
 }

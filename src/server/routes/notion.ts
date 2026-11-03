@@ -5,6 +5,7 @@ import type { Providers } from "../../providers/interfaces.js";
 import type { Config } from "../config.js";
 import { notionCallbackUri } from "../config.js";
 import { strings } from "../../shared/strings.js";
+import { asyncHandler } from "../asyncHandler.js";
 
 export function notionRoutes(_db: Database.Database, providers: Providers, cfg: Config): Router {
   const router = Router();
@@ -16,7 +17,7 @@ export function notionRoutes(_db: Database.Database, providers: Providers, cfg: 
     res.json({ url });
   });
 
-  router.get("/callback", async (req: Request, res: Response) => {
+  router.get("/callback", asyncHandler(async (req: Request, res: Response) => {
     const { code } = req.query as { code?: string };
     if (!code) {
       res.status(400).json({ error: strings.notion.missingCode });
@@ -30,13 +31,13 @@ export function notionRoutes(_db: Database.Database, providers: Providers, cfg: 
     } catch {
       res.status(502).json({ error: strings.notion.oauthFailed });
     }
-  });
+  }));
 
   router.get("/status", (_req: Request, res: Response) => {
     res.json({ connected: !!cfg.notion?.accessToken });
   });
 
-  router.get("/search-pages", async (req: Request, res: Response) => {
+  router.get("/search-pages", asyncHandler(async (req: Request, res: Response) => {
     if (!cfg.notion?.accessToken) {
       res.status(401).json({ error: strings.notion.notConnected });
       return;
@@ -48,9 +49,9 @@ export function notionRoutes(_db: Database.Database, providers: Providers, cfg: 
     } catch {
       res.status(502).json({ error: strings.notion.searchFailed });
     }
-  });
+  }));
 
-  router.post("/root-pages", async (req: Request, res: Response) => {
+  router.post("/root-pages", asyncHandler(async (req: Request, res: Response) => {
     if (!cfg.notion?.accessToken) {
       res.status(401).json({ error: strings.notion.notConnected });
       return;
@@ -66,7 +67,7 @@ export function notionRoutes(_db: Database.Database, providers: Providers, cfg: 
     } catch {
       res.status(502).json({ error: strings.notion.createPageFailed });
     }
-  });
+  }));
 
   return router;
 }
